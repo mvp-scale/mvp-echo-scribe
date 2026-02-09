@@ -412,6 +412,7 @@ export default function App() {
                     currentTime={currentTime}
                     searchQuery={searchQuery}
                     onClickTimestamp={handleClickTimestamp}
+                    showEntities={options.detectEntities}
                     visibleEntityTypes={options.visibleEntityTypes}
                     showSentiment={options.detectSentiment}
                     visibleSentimentTypes={options.visibleSentimentTypes}

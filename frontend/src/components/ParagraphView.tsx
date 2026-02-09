@@ -1,12 +1,14 @@
 import type { Paragraph } from "../types";
 import { ENTITY_TYPE_CONFIG, SENTIMENT_CONFIG } from "../types";
 import { speakerColor, speakerName } from "./SpeakerBadge";
+import { renderText } from "../utils/highlight-text";
 
 interface Props {
   paragraphs: Paragraph[];
   currentTime: number;
   searchQuery: string;
   onClickTimestamp: (time: number) => void;
+  showEntities: boolean;
   visibleEntityTypes: Record<string, boolean>;
   showSentiment: boolean;
   visibleSentimentTypes: Record<string, boolean>;
@@ -19,33 +21,12 @@ function formatTime(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}.${String(ms).padStart(2, "0")}`;
 }
 
-function highlightText(text: string, query: string): JSX.Element {
-  if (!query) return <>{text}</>;
-  const regex = new RegExp(
-    `(${query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`,
-    "gi"
-  );
-  const parts = text.split(regex);
-  return (
-    <>
-      {parts.map((part, i) =>
-        regex.test(part) ? (
-          <mark key={i} className="bg-yellow-500/25 text-gray-200 rounded px-0.5">
-            {part}
-          </mark>
-        ) : (
-          <span key={i}>{part}</span>
-        )
-      )}
-    </>
-  );
-}
-
 export default function ParagraphView({
   paragraphs,
   currentTime,
   searchQuery,
   onClickTimestamp,
+  showEntities,
   visibleEntityTypes,
   showSentiment,
   visibleSentimentTypes,
@@ -86,7 +67,7 @@ export default function ParagraphView({
               <span className="text-[10px] font-mono text-gray-500">
                 {formatTime(para.start)} &rarr; {formatTime(para.end)}
               </span>
-              {para.entity_counts && (() => {
+              {showEntities && para.entity_counts && (() => {
                 const pills = ENTITY_TYPE_CONFIG
                   .filter((t) => visibleEntityTypes[t.key] && para.entity_counts![t.key])
                   .map((t) => (
@@ -120,7 +101,7 @@ export default function ParagraphView({
               })()}
             </div>
             <div className="text-[13px] leading-relaxed text-gray-200">
-              {highlightText(para.text, searchQuery)}
+              {renderText(para.text, searchQuery)}
             </div>
           </div>
         );

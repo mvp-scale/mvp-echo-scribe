@@ -1,5 +1,6 @@
 import type { Segment } from "../types";
 import { speakerColor, speakerName } from "./SpeakerBadge";
+import { renderText } from "../utils/highlight-text";
 
 interface Props {
   segment: Segment;
@@ -13,21 +14,6 @@ function formatTime(seconds: number): string {
   const s = Math.floor(seconds % 60);
   const ms = Math.round((seconds % 1) * 100);
   return `${m}:${String(s).padStart(2, "0")}.${String(ms).padStart(2, "0")}`;
-}
-
-function highlightText(text: string, query: string) {
-  if (!query) return text;
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const parts = text.split(new RegExp(`(${escaped})`, "gi"));
-  return parts.map((part, i) =>
-    part.toLowerCase() === query.toLowerCase() ? (
-      <mark key={i} className="bg-yellow-500/25 text-gray-200 rounded px-0.5">
-        {part}
-      </mark>
-    ) : (
-      part
-    )
-  );
 }
 
 export default function SpeakerSegment({
@@ -61,7 +47,7 @@ export default function SpeakerSegment({
 
       {/* Text */}
       <span className="text-[13px] leading-relaxed text-gray-200 min-w-0">
-        {searchQuery ? highlightText(segment.text, searchQuery) : segment.text}
+        {renderText(segment.text, searchQuery)}
       </span>
     </div>
   );

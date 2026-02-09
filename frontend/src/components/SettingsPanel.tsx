@@ -1,6 +1,5 @@
 import { useRef } from "react";
 import { type TranscriptionOptions, type TextRule, type TextRuleset, type TextRuleCategory, ENTITY_TYPE_CONFIG, SENTIMENT_TYPE_CONFIG } from "../types";
-import { DEFAULT_TEXT_RULES } from "../utils/text-rule-presets";
 
 interface Props {
   options: TranscriptionOptions;
@@ -8,6 +7,10 @@ interface Props {
   disabled?: boolean;
   detectedSpeakers?: string[];
 }
+
+/* ── Shared pill class for inactive state (used by all toggleable pills) ── */
+const PILL_INACTIVE = "bg-surface-3 text-gray-600 border border-border hover:border-mvp-blue";
+const PILL_BASE = "px-2 py-0.5 rounded text-[10px] font-medium transition-all cursor-pointer";
 
 function Toggle({
   checked,
@@ -40,6 +43,11 @@ function Toggle({
   );
 }
 
+/* ── Shared input class ── */
+const INPUT_CLASS = `w-12 px-1.5 py-0.5 bg-surface-3 border border-border rounded text-[10px] text-center
+  text-gray-200 placeholder-gray-600 hover:border-mvp-blue focus:border-mvp-blue focus:outline-none
+  [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`;
+
 function NumberInput({
   value,
   onChange,
@@ -55,16 +63,21 @@ function NumberInput({
 }) {
   return (
     <input
-      type="number"
-      className="w-14 px-1.5 py-0.5 bg-surface-3 border border-border rounded text-xs
-        text-gray-200 placeholder-gray-600 focus:border-mvp-blue focus:outline-none"
+      type="text"
+      inputMode="numeric"
+      className={INPUT_CLASS}
       placeholder={placeholder}
-      min={min}
-      max={max}
       value={value ?? ""}
       onChange={(e) => {
-        const v = e.target.value;
-        onChange(v === "" ? undefined : parseInt(v, 10));
+        const v = e.target.value.trim();
+        if (v === "") {
+          onChange(undefined);
+          return;
+        }
+        const n = parseInt(v, 10);
+        if (!isNaN(n) && n >= min && n <= max) {
+          onChange(n);
+        }
       }}
     />
   );
@@ -73,7 +86,6 @@ function NumberInput({
 function parseRules(text: string): TextRule[] | null {
   try {
     const parsed = JSON.parse(text);
-    // Accept bare array or envelope with rules array
     const rules: unknown[] = Array.isArray(parsed) ? parsed : parsed?.rules;
     if (!Array.isArray(rules)) return null;
     return rules.map((r: any) => ({
@@ -98,11 +110,6 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
     value: TranscriptionOptions[K]
   ) => {
     onChange({ ...options, [key]: value });
-  };
-
-  const handleReset = () => {
-    set("textRules", DEFAULT_TEXT_RULES.map((r) => ({ ...r })));
-    set("textRuleCategory", "all");
   };
 
   const handleImport = () => fileInputRef.current?.click();
@@ -140,83 +147,43 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
   const replaceCount = options.textRules.filter((r) => r.category === "replace").length;
 
   const activeCategory = options.textRuleCategory;
-  const activeCount = activeCategory === "all"
-    ? totalCount
-    : options.textRules.filter((r) => r.category === activeCategory).length;
 
-  const categories: { key: TextRuleCategory; label: string; count: number }[] = [
-    { key: "all", label: "All", count: totalCount },
-    { key: "filler", label: "Fillers", count: fillerCount },
-    { key: "pii", label: "PII", count: piiCount },
-    { key: "replace", label: "Replace", count: replaceCount },
+  const categories: { key: TextRuleCategory; label: string; count: number; colorClass: string }[] = [
+    { key: "all", label: "All", count: totalCount, colorClass: "bg-mvp-blue/15 text-mvp-blue-light" },
+    { key: "filler", label: "Fillers", count: fillerCount, colorClass: "bg-orange-500/15 text-orange-400" },
+    { key: "pii", label: "PII", count: piiCount, colorClass: "bg-red-500/15 text-red-400" },
+    { key: "replace", label: "Replace", count: replaceCount, colorClass: "bg-cyan-500/15 text-cyan-400" },
   ];
 
-  const statusLabel = activeCategory === "all"
-    ? `${activeCount} rules applied`
-    : activeCategory === "filler"
-    ? `${activeCount} filler rules applied`
-    : activeCategory === "pii"
-    ? `${activeCount} PII rules applied`
-    : `${activeCount} replace rules applied`;
-
   return (
-    <div className="p-5 space-y-6 text-sm">
+    <div className="p-4 space-y-4 text-sm">
       {/* Transcription */}
       <div>
-        <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-3 pb-1.5 border-b border-border">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 pb-1 border-b border-border">
           Transcription
         </div>
 
         {/* Diarization */}
-        <div className="py-2.5">
-          <div className="flex items-start gap-2.5">
+        <div className="py-1.5">
+          <div className="flex items-center gap-2.5">
             <Toggle
               checked={options.diarize}
               onChange={(v) => set("diarize", v)}
               disabled={disabled}
             />
-            <div className="flex-1">
-              <div className="text-[13px] font-semibold">Diarization</div>
-              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
-                diarize={String(options.diarize)}
-              </div>
-              <div className="text-[11px] text-gray-500 mt-0.5">
-                Identify and label speakers.
-              </div>
-            </div>
+            <div className="text-[12px] font-semibold">Diarization</div>
           </div>
-          {options.diarize && (
-            <div className="mt-2 pl-[46px] space-y-1.5">
-              <div className="flex items-center gap-1.5">
-                <label className="text-[11px] text-gray-400 whitespace-nowrap">
-                  Min speakers:
-                </label>
-                <NumberInput
-                  value={options.minSpeakers}
-                  onChange={(v) => set("minSpeakers", v)}
-                  placeholder="Auto"
-                />
-              </div>
-              <div className="flex items-center gap-1.5">
-                <label className="text-[11px] text-gray-400 whitespace-nowrap">
-                  Max speakers:
-                </label>
-                <NumberInput
-                  value={options.maxSpeakers}
-                  onChange={(v) => set("maxSpeakers", v)}
-                  placeholder="Auto"
-                />
-              </div>
-              <div className="flex items-center gap-1.5">
-                <label className="text-[11px] text-gray-400 whitespace-nowrap">
-                  Exact count:
-                </label>
-                <NumberInput
-                  value={options.numSpeakers}
-                  onChange={(v) => set("numSpeakers", v)}
-                  placeholder="Auto"
-                />
-              </div>
+          {options.diarize && detectedSpeakers.length > 1 && (
+            <div className="mt-1.5 pl-[46px] flex items-center gap-2 flex-wrap">
+              <label className="flex items-center gap-1 text-[10px] text-gray-400">
+                Min <NumberInput value={options.minSpeakers} onChange={(v) => set("minSpeakers", v)} placeholder="Auto" />
+              </label>
+              <label className="flex items-center gap-1 text-[10px] text-gray-400">
+                Max <NumberInput value={options.maxSpeakers} onChange={(v) => set("maxSpeakers", v)} placeholder="Auto" />
+              </label>
+              <label className="flex items-center gap-1 text-[10px] text-gray-400">
+                Exact <NumberInput value={options.numSpeakers} onChange={(v) => set("numSpeakers", v)} placeholder="Auto" />
+              </label>
             </div>
           )}
         </div>
@@ -224,163 +191,96 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
 
       {/* Post-Processing */}
       <div>
-        <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-3 pb-1.5 border-b border-border">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 pb-1 border-b border-border">
           Post-Processing
         </div>
 
         {/* Detect Paragraphs */}
-        <div className="py-2.5">
-          <div className="flex items-start gap-2.5">
+        <div className="py-1.5">
+          <div className="flex items-center gap-2.5">
             <Toggle
               checked={options.detectParagraphs}
               onChange={(v) => set("detectParagraphs", v)}
               disabled={disabled}
             />
-            <div className="flex-1">
-              <div className="text-[13px] font-semibold">Detect Paragraphs</div>
-              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
-                detect_paragraphs={String(options.detectParagraphs)}
-              </div>
-              <div className="text-[11px] text-gray-500 mt-0.5">
-                Group segments by speaker turn.
-              </div>
-            </div>
+            <div className="text-[12px] font-semibold">Paragraphs</div>
           </div>
           {options.detectParagraphs && (
-            <div className="mt-2 pl-[46px]">
-              <div className="flex items-center gap-1.5">
-                <label className="text-[11px] text-gray-400 whitespace-nowrap">
-                  Silence gap:
-                </label>
-                <input
-                  type="range"
-                  min="0.2"
-                  max="5"
-                  step="0.1"
-                  value={options.paragraphSilenceThreshold}
-                  onChange={(e) =>
-                    set("paragraphSilenceThreshold", parseFloat(e.target.value))
-                  }
-                  className="flex-1 accent-mvp-blue"
-                />
-                <span className="text-[10px] font-mono text-gray-200 min-w-[32px] text-right">
-                  {options.paragraphSilenceThreshold.toFixed(1)}s
-                </span>
-              </div>
+            <div className="mt-1.5 pl-[46px] flex items-center gap-1.5">
+              <span className="text-[10px] text-gray-400">Gap</span>
+              <input
+                type="range"
+                min="0.2"
+                max="5"
+                step="0.1"
+                value={options.paragraphSilenceThreshold}
+                onChange={(e) =>
+                  set("paragraphSilenceThreshold", parseFloat(e.target.value))
+                }
+                className="flex-1 accent-mvp-blue h-1"
+              />
+              <span className="text-[10px] font-mono text-gray-300 min-w-[28px] text-right">
+                {options.paragraphSilenceThreshold.toFixed(1)}s
+              </span>
             </div>
           )}
         </div>
 
         {/* Confidence Filter */}
-        <div className="py-2.5">
-          <div className="flex items-start gap-2.5">
+        <div className="py-1.5">
+          <div className="flex items-center gap-2.5">
             <Toggle
               checked={options.minConfidence > 0}
               onChange={(v) => set("minConfidence", v ? 0.5 : 0)}
               disabled={disabled}
             />
-            <div className="flex-1">
-              <div className="text-[13px] font-semibold">Confidence Filter</div>
-              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
-                min_confidence={options.minConfidence.toFixed(2)}
-              </div>
-              <div className="text-[11px] text-gray-500 mt-0.5">
-                Filter low-confidence segments.
-              </div>
-            </div>
+            <div className="text-[12px] font-semibold">Confidence Filter</div>
           </div>
           {options.minConfidence > 0 && (
-            <div className="mt-2 pl-[46px]">
-              <div className="flex items-center gap-1.5">
-                <label className="text-[11px] text-gray-400 whitespace-nowrap">
-                  Threshold:
-                </label>
-                <input
-                  type="range"
-                  min="0.1"
-                  max="1"
-                  step="0.05"
-                  value={options.minConfidence}
-                  onChange={(e) =>
-                    set("minConfidence", parseFloat(e.target.value))
-                  }
-                  className="flex-1 accent-mvp-blue"
-                />
-                <span className="text-[10px] font-mono text-gray-200 min-w-[32px] text-right">
-                  {options.minConfidence.toFixed(2)}
-                </span>
-              </div>
+            <div className="mt-1.5 pl-[46px] flex items-center gap-1.5">
+              <span className="text-[10px] text-gray-400">Min</span>
+              <input
+                type="range"
+                min="0.1"
+                max="1"
+                step="0.05"
+                value={options.minConfidence}
+                onChange={(e) =>
+                  set("minConfidence", parseFloat(e.target.value))
+                }
+                className="flex-1 accent-mvp-blue h-1"
+              />
+              <span className="text-[10px] font-mono text-gray-300 min-w-[28px] text-right">
+                {options.minConfidence.toFixed(2)}
+              </span>
             </div>
           )}
         </div>
 
-        {/* Text Rules */}
-        <div className="py-2.5">
-          <div className="flex items-start gap-2.5">
+        {/* Smart Redaction & PII */}
+        <div className="py-1.5">
+          <div className="flex items-center gap-2.5">
             <Toggle
               checked={options.textRulesEnabled}
               onChange={(v) => set("textRulesEnabled", v)}
               disabled={disabled}
             />
-            <div className="flex-1">
-              <div className="text-[13px] font-semibold">Text Rules</div>
-              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
-                text_rules={options.textRulesEnabled ? `${activeCount} active` : "off"}
-              </div>
-              <div className="text-[11px] text-gray-500 mt-0.5">
-                Filler removal, PII redaction, text replacements.
-              </div>
-            </div>
-          </div>
-          {options.textRulesEnabled && (
-            <div className="mt-2 pl-[46px] space-y-2">
-              {/* Category pills */}
-              <div className="flex gap-1">
-                {categories.map((cat) => (
-                  <button
-                    key={cat.key}
-                    className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${
-                      activeCategory === cat.key
-                        ? "bg-mvp-blue-dim border-mvp-blue text-mvp-blue-light"
-                        : "bg-surface-3 border-border text-gray-500 hover:text-gray-300"
-                    }`}
-                    onClick={() => set("textRuleCategory", cat.key)}
-                  >
-                    {cat.label}{cat.count > 0 ? ` (${cat.count})` : ""}
-                  </button>
-                ))}
-              </div>
-
-              {/* Status message */}
-              {totalCount > 0 && (
-                <div className="text-[11px] text-gray-500">
-                  {statusLabel}
-                </div>
-              )}
-
-              {/* Import / Export / Defaults */}
-              <div className="flex gap-1.5 flex-wrap">
+            <div className="text-[12px] font-semibold flex-1">Smart Redaction & PII</div>
+            {options.textRulesEnabled && (
+              <div className="flex items-center gap-2">
                 <button
-                  className="px-2.5 py-1 text-[11px] bg-surface-3 border border-border rounded
-                    text-gray-400 hover:text-white hover:border-mvp-blue"
+                  className="text-[10px] text-gray-500 hover:text-mvp-blue-light transition-colors"
                   onClick={handleImport}
                 >
-                  Import JSON
+                  Import
                 </button>
+                <span className="text-gray-600">|</span>
                 <button
-                  className="px-2.5 py-1 text-[11px] bg-surface-3 border border-border rounded
-                    text-gray-400 hover:text-white hover:border-mvp-blue"
+                  className="text-[10px] text-gray-500 hover:text-mvp-blue-light transition-colors"
                   onClick={handleExport}
                   disabled={totalCount === 0}
                 >
-                  Export JSON
-                </button>
-                <button
-                  className="px-2.5 py-1 text-[11px] bg-surface-3 border border-border rounded
-                    text-gray-400 hover:text-white hover:border-mvp-blue"
-                  onClick={handleReset}
-                >
-                  Defaults
+                  Export
                 </button>
                 <input
                   ref={fileInputRef}
@@ -390,29 +290,42 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
                   onChange={handleFileImport}
                 />
               </div>
-
-              {totalCount === 0 && (
-                <div className="text-[11px] text-gray-600">
-                  No rules loaded. Import a JSON ruleset to get started.
-                </div>
-              )}
+            )}
+          </div>
+          {options.textRulesEnabled && (
+            <div className="mt-1.5 pl-[46px]">
+              <div className="flex flex-wrap gap-1">
+                {categories.map((cat) => {
+                  const active = activeCategory === cat.key;
+                  return (
+                    <button
+                      key={cat.key}
+                      className={`${PILL_BASE}
+                        ${active ? cat.colorClass : PILL_INACTIVE}`}
+                      onClick={() => set("textRuleCategory", cat.key)}
+                    >
+                      {cat.label}{cat.count > 0 ? ` (${cat.count})` : ""}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
 
-        {/* Custom Speaker Labels - auto-enabled when speakers detected */}
+        {/* Speaker Labels - auto-enabled when speakers detected */}
         {detectedSpeakers.length > 1 && (
-          <div className="py-2.5">
-            <div className="text-[13px] font-semibold">
-              Speaker Labels
-              <span className="text-[10px] font-normal text-gray-500 ml-1">
-                ({detectedSpeakers.length} detected)
-              </span>
+          <div className="py-1.5">
+            <div className="flex items-center gap-2.5">
+              <Toggle checked={true} onChange={() => {}} disabled />
+              <div className="text-[12px] font-semibold">
+                Speaker Labels
+                <span className="text-[10px] font-normal text-gray-500 ml-1.5">
+                  {detectedSpeakers.length} detected
+                </span>
+              </div>
             </div>
-            <div className="text-[11px] text-gray-500 mt-0.5 mb-2">
-              Rename speakers in output and exports.
-            </div>
-            <div className="space-y-1.5">
+            <div className="mt-1.5 pl-[46px] space-y-1">
               {detectedSpeakers.map((spk, i) => {
                 const color = `var(--speaker-${i % 8})`;
                 return (
@@ -421,13 +334,10 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
                       className="w-2 h-2 rounded-full shrink-0"
                       style={{ background: color }}
                     />
-                    <span className="text-[10px] text-gray-500 whitespace-nowrap w-[18px]">
-                      {i + 1}
-                    </span>
                     <input
                       type="text"
-                      className="flex-1 px-1.5 py-0.5 bg-surface-3 border border-border rounded text-[11px]
-                        text-gray-200 placeholder-gray-600 focus:border-mvp-blue focus:outline-none"
+                      className={`flex-1 px-1.5 py-0.5 bg-surface-3 border border-border rounded text-[10px]
+                        text-gray-200 placeholder-gray-600 hover:border-mvp-blue focus:border-mvp-blue focus:outline-none`}
                       placeholder={`Speaker ${i + 1}`}
                       value={options.speakerLabels[spk] ?? ""}
                       onChange={(e) => {
@@ -450,41 +360,35 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
 
       {/* Audio Intelligence */}
       <div>
-        <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-3 pb-1.5 border-b border-border">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 pb-1 border-b border-border">
           Audio Intelligence
         </div>
 
         {/* Entity Detection */}
-        <div className="py-2.5">
-          <div className="flex items-start gap-2.5">
+        <div className="py-1.5">
+          <div className="flex items-center gap-2.5">
             <Toggle
               checked={options.detectEntities}
               onChange={(v) => set("detectEntities", v)}
               disabled={disabled}
             />
             <div className="flex-1">
-              <div className="text-[13px] font-semibold">Entity Detection</div>
-              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
-                detect_entities={String(options.detectEntities)}
-              </div>
-              <div className="text-[11px] text-gray-500 mt-0.5">
-                Detect people, organizations, locations, dates.
+              <div className="text-[12px] font-semibold">Entity Detection</div>
+              <div className="text-[10px] text-gray-500 mt-0.5">
+                People, organizations, locations, dates.
               </div>
             </div>
           </div>
           {options.detectEntities && (
-            <div className="mt-2 pl-[46px]">
-              <div className="flex flex-wrap gap-1.5">
+            <div className="mt-1.5 pl-[46px]">
+              <div className="flex flex-wrap gap-1">
                 {ENTITY_TYPE_CONFIG.map((t) => {
                   const active = options.visibleEntityTypes[t.key] ?? true;
                   return (
                     <button
                       key={t.key}
-                      className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all
-                        ${active
-                          ? t.colorClass
-                          : "bg-surface-3 text-gray-600 border border-border"
-                        }`}
+                      className={`${PILL_BASE}
+                        ${active ? t.colorClass : PILL_INACTIVE}`}
                       onClick={() => {
                         set("visibleEntityTypes", {
                           ...options.visibleEntityTypes,
@@ -502,19 +406,16 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
         </div>
 
         {/* Topic Detection */}
-        <div className="py-2.5">
-          <div className="flex items-start gap-2.5">
+        <div className="py-1.5">
+          <div className="flex items-center gap-2.5">
             <Toggle
               checked={options.detectTopics}
               onChange={(v) => set("detectTopics", v)}
               disabled={disabled}
             />
             <div className="flex-1">
-              <div className="text-[13px] font-semibold">Topic Detection</div>
-              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
-                detect_topics={String(options.detectTopics)}
-              </div>
-              <div className="text-[11px] text-gray-500 mt-0.5">
+              <div className="text-[12px] font-semibold">Topic Detection</div>
+              <div className="text-[10px] text-gray-500 mt-0.5">
                 Extract most-discussed subjects.
               </div>
             </div>
@@ -522,36 +423,30 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
         </div>
 
         {/* Sentiment Analysis */}
-        <div className="py-2.5">
-          <div className="flex items-start gap-2.5">
+        <div className="py-1.5">
+          <div className="flex items-center gap-2.5">
             <Toggle
               checked={options.detectSentiment}
               onChange={(v) => set("detectSentiment", v)}
               disabled={disabled}
             />
             <div className="flex-1">
-              <div className="text-[13px] font-semibold">Sentiment Analysis</div>
-              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
-                detect_sentiment={String(options.detectSentiment)}
-              </div>
-              <div className="text-[11px] text-gray-500 mt-0.5">
+              <div className="text-[12px] font-semibold">Sentiment Analysis</div>
+              <div className="text-[10px] text-gray-500 mt-0.5">
                 Positive, neutral, or negative per paragraph.
               </div>
             </div>
           </div>
           {options.detectSentiment && (
-            <div className="mt-2 pl-[46px]">
-              <div className="flex flex-wrap gap-1.5">
+            <div className="mt-1.5 pl-[46px]">
+              <div className="flex flex-wrap gap-1">
                 {SENTIMENT_TYPE_CONFIG.map((t) => {
                   const active = options.visibleSentimentTypes[t.key] ?? true;
                   return (
                     <button
                       key={t.key}
-                      className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all
-                        ${active
-                          ? t.colorClass
-                          : "bg-surface-3 text-gray-600 border border-border"
-                        }`}
+                      className={`${PILL_BASE}
+                        ${active ? t.colorClass : PILL_INACTIVE}`}
                       onClick={() => {
                         set("visibleSentimentTypes", {
                           ...options.visibleSentimentTypes,
@@ -572,16 +467,14 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
         {[
           { name: "Summarization", phase: "Phase 3" },
         ].map((feat) => (
-          <div key={feat.name} className="py-2">
-            <div className="flex items-start gap-2.5">
+          <div key={feat.name} className="py-1.5">
+            <div className="flex items-center gap-2.5">
               <Toggle checked={false} onChange={() => {}} disabled />
-              <div className="flex-1">
-                <div className="text-[13px] font-semibold text-gray-400">
-                  {feat.name}{" "}
-                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 font-semibold ml-1">
-                    {feat.phase}
-                  </span>
-                </div>
+              <div className="text-[12px] font-semibold text-gray-400">
+                {feat.name}
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 font-semibold ml-1.5">
+                  {feat.phase}
+                </span>
               </div>
             </div>
           </div>

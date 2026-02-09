@@ -30,15 +30,8 @@ export async function transcribe(
     form.append("min_confidence", String(options.minConfidence));
   }
 
-  // Text rules filtered by active category (only if enabled)
-  if (options.textRulesEnabled) {
-    const activeRules = options.textRules.filter((r) =>
-      r.enabled && (options.textRuleCategory === "all" || r.category === options.textRuleCategory)
-    );
-    if (activeRules.length > 0) {
-      form.append("text_rules", JSON.stringify(activeRules));
-    }
-  }
+  // Text rules are applied client-side only (post-processing.ts) so raw data stays clean
+  // and toggling on/off works without re-transcribing.
 
   if (Object.keys(options.speakerLabels).length > 0) {
     form.append("speaker_labels", JSON.stringify(options.speakerLabels));
