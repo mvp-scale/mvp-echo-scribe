@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from typing import List, Optional
 from pathlib import Path
@@ -8,10 +9,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, FileResponse
 import torch
 
-from models import WhisperSegment, TranscriptionResponse, ModelInfo, ModelList
+from models import (
+    WhisperSegment, TranscriptionResponse, ModelInfo, ModelList,
+    Paragraph, SpeakerStatistics, Statistics,
+)
 from audio import convert_audio_to_wav, split_audio_into_chunks
 from transcription import load_model, format_srt, format_vtt, transcribe_audio_chunk
 from diarization import Diarizer
+from post_processing import (
+    detect_paragraphs, remove_filler_words, find_and_replace,
+    filter_by_confidence, compute_speaker_statistics, apply_speaker_labels,
+)
 from config import get_config
 from auth import AuthMiddleware
 
@@ -74,6 +82,17 @@ def create_app() -> FastAPI:
         word_timestamps: bool = Form(False),
         diarize: bool = Form(True),
         include_diarization_in_text: Optional[bool] = Form(None),
+        # --- Phase 1: Diarization hints ---
+        num_speakers: Optional[int] = Form(None),
+        min_speakers: Optional[int] = Form(None),
+        max_speakers: Optional[int] = Form(None),
+        # --- Phase 1: Post-processing ---
+        detect_paragraphs_flag: bool = Form(False, alias="detect_paragraphs"),
+        paragraph_silence_threshold: float = Form(0.8),
+        remove_fillers: bool = Form(False),
+        min_confidence: float = Form(0.0),
+        find_replace: Optional[str] = Form(None),
+        speaker_labels: Optional[str] = Form(None),
     ):
         global asr_model, diarizer_instance
 
@@ -96,11 +115,16 @@ def create_app() -> FastAPI:
             wav_file = convert_audio_to_wav(str(temp_file))
             audio_chunks = split_audio_into_chunks(wav_file, chunk_duration=config.chunk_duration)
 
-            # Diarization (uses pre-loaded pipeline)
+            # Diarization (uses pre-loaded pipeline, now with speaker hints)
             diarization_result = None
             if diarize and diarizer_instance and diarizer_instance.pipeline:
                 logger.info("Running speaker diarization")
-                diarization_result = diarizer_instance.diarize(wav_file)
+                diarization_result = diarizer_instance.diarize(
+                    wav_file,
+                    num_speakers=num_speakers,
+                    min_speakers=min_speakers,
+                    max_speakers=max_speakers,
+                )
                 logger.info(f"Found {diarization_result.num_speakers} speakers")
 
             # Transcribe chunks
@@ -128,28 +152,87 @@ def create_app() -> FastAPI:
             if diarizer_instance and diarization_result and diarization_result.segments:
                 all_segments = diarizer_instance.merge_with_transcription(diarization_result, all_segments)
 
-                use_in_text = include_diarization_in_text if include_diarization_in_text is not None else config.include_diarization_in_text
+            # --- Post-processing pipeline ---
 
-                if use_in_text:
-                    previous_speaker = None
-                    seen = set()
-                    for seg in all_segments:
-                        if seg.speaker and seg.speaker.startswith("speaker_"):
-                            parts = seg.speaker.split("_")
-                            try:
-                                num = int(parts[-1]) + 1
-                                if seg.speaker != previous_speaker:
-                                    prefix = f"Speaker {num}: " if seg.speaker not in seen else f"{num}: "
-                                    seen.add(seg.speaker)
-                                    seg.text = f"{prefix}{seg.text}"
-                                previous_speaker = seg.speaker
-                            except (ValueError, IndexError):
-                                pass
+            # 1. Confidence filtering (before text transforms)
+            if min_confidence > 0.0:
+                all_segments = filter_by_confidence(all_segments, min_confidence)
 
-                    full_text = " ".join(seg.text for seg in all_segments)
+            # 2. Filler word removal
+            if remove_fillers:
+                all_segments = remove_filler_words(all_segments)
+
+            # 3. Find & replace (parse JSON string from form data)
+            if find_replace:
+                try:
+                    rules = json.loads(find_replace)
+                    if isinstance(rules, list):
+                        all_segments = find_and_replace(all_segments, rules)
+                except json.JSONDecodeError:
+                    logger.warning("Invalid find_replace JSON, skipping")
+
+            # 4. Custom speaker labels
+            labels_map = None
+            if speaker_labels:
+                try:
+                    labels_map = json.loads(speaker_labels)
+                    if isinstance(labels_map, dict):
+                        all_segments = apply_speaker_labels(all_segments, labels_map)
+                except json.JSONDecodeError:
+                    logger.warning("Invalid speaker_labels JSON, skipping")
+
+            # Rebuild full text after post-processing
+            use_in_text = include_diarization_in_text if include_diarization_in_text is not None else config.include_diarization_in_text
+
+            if diarize and diarization_result and diarization_result.segments and use_in_text:
+                previous_speaker = None
+                seen = set()
+                text_parts = []
+                for seg in all_segments:
+                    if seg.speaker and seg.speaker != "unknown":
+                        if seg.speaker != previous_speaker:
+                            # Use custom label as-is, or format raw speaker ID
+                            if labels_map and seg.speaker in labels_map.values():
+                                display = seg.speaker
+                            elif seg.speaker.startswith("speaker_"):
+                                parts = seg.speaker.split("_")
+                                try:
+                                    num = int(parts[-1]) + 1
+                                    display = f"Speaker {num}"
+                                except (ValueError, IndexError):
+                                    display = seg.speaker
+                            else:
+                                display = seg.speaker
+                            text_parts.append(f"{display}: {seg.text.strip()}")
+                            seen.add(seg.speaker)
+                            previous_speaker = seg.speaker
+                        else:
+                            text_parts.append(seg.text.strip())
+                    else:
+                        text_parts.append(seg.text.strip())
+                        previous_speaker = None
+                full_text = " ".join(text_parts)
+            else:
+                full_text = " ".join(seg.text.strip() for seg in all_segments)
 
             # Compute duration from audio (last segment end time)
             duration = all_segments[-1].end if all_segments else 0.0
+
+            # 5. Paragraph detection
+            paragraphs_data = None
+            if detect_paragraphs_flag and all_segments:
+                raw_paragraphs = detect_paragraphs(all_segments, paragraph_silence_threshold)
+                paragraphs_data = [Paragraph(**p) for p in raw_paragraphs]
+
+            # 6. Speaker statistics
+            statistics_data = None
+            if diarize and diarization_result and diarization_result.segments:
+                raw_stats = compute_speaker_statistics(all_segments, duration)
+                if raw_stats:
+                    statistics_data = Statistics(
+                        speakers={k: SpeakerStatistics(**v) for k, v in raw_stats["speakers"].items()},
+                        total_speakers=raw_stats["total_speakers"],
+                    )
 
             response = TranscriptionResponse(
                 text=full_text,
@@ -157,6 +240,8 @@ def create_app() -> FastAPI:
                 language=language,
                 duration=duration,
                 model="parakeet-tdt-0.6b-v2",
+                paragraphs=paragraphs_data,
+                statistics=statistics_data,
             )
 
             # Cleanup

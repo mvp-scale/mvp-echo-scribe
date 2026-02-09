@@ -1,32 +1,34 @@
-import type { Segment, ExportFormat } from "../types";
+import type { Segment, Paragraph, ExportFormat, ViewMode } from "../types";
 import { formatTimestamp } from "./format-time";
 
-function toSRT(segments: Segment[]): string {
+// --- Line-by-line formatters (segment per entry) ---
+
+function segmentsToSRT(segments: Segment[]): string {
   return segments
     .map((seg, i) => {
       const start = formatTimestamp(seg.start).replace(".", ",");
       const end = formatTimestamp(seg.end).replace(".", ",");
-      const speaker = seg.speaker ? `[${speakerLabel(seg.speaker)}] ` : "";
+      const speaker = seg.speaker ? `[${seg.speaker}] ` : "";
       return `${i + 1}\n${start} --> ${end}\n${speaker}${seg.text.trim()}\n`;
     })
     .join("\n");
 }
 
-function toVTT(segments: Segment[]): string {
+function segmentsToVTT(segments: Segment[]): string {
   const lines = segments.map((seg) => {
     const start = formatTimestamp(seg.start);
     const end = formatTimestamp(seg.end);
-    const speaker = seg.speaker ? `<v ${speakerLabel(seg.speaker)}>` : "";
+    const speaker = seg.speaker ? `<v ${seg.speaker}>` : "";
     return `${start} --> ${end}\n${speaker}${seg.text.trim()}\n`;
   });
   return `WEBVTT\n\n${lines.join("\n")}`;
 }
 
-function toTXT(segments: Segment[]): string {
+function segmentsToTXT(segments: Segment[]): string {
   let txt = "";
   let lastSpeaker = "";
   for (const seg of segments) {
-    const label = seg.speaker ? speakerLabel(seg.speaker) : "";
+    const label = seg.speaker ?? "";
     if (label && label !== lastSpeaker) {
       txt += `\n${label}:\n`;
       lastSpeaker = label;
@@ -36,12 +38,12 @@ function toTXT(segments: Segment[]): string {
   return txt.trim();
 }
 
-function toJSON(segments: Segment[]): string {
+function segmentsToJSON(segments: Segment[]): string {
   return JSON.stringify(
     segments.map((s) => ({
       start: s.start,
       end: s.end,
-      speaker: s.speaker ? speakerLabel(s.speaker) : undefined,
+      speaker: s.speaker ?? undefined,
       text: s.text.trim(),
     })),
     null,
@@ -49,17 +51,58 @@ function toJSON(segments: Segment[]): string {
   );
 }
 
-function speakerLabel(raw: string): string {
-  // "speaker_SPEAKER_00" -> "Speaker 1"
-  const match = raw.match(/(\d+)$/);
-  if (match) {
-    return `Speaker ${parseInt(match[1], 10) + 1}`;
-  }
-  return raw;
+// --- Paragraph formatters (grouped entries) ---
+
+function paragraphsToSRT(paragraphs: Paragraph[]): string {
+  return paragraphs
+    .map((p, i) => {
+      const start = formatTimestamp(p.start).replace(".", ",");
+      const end = formatTimestamp(p.end).replace(".", ",");
+      const speaker = p.speaker ? `[${p.speaker}] ` : "";
+      return `${i + 1}\n${start} --> ${end}\n${speaker}${p.text.trim()}\n`;
+    })
+    .join("\n");
 }
+
+function paragraphsToVTT(paragraphs: Paragraph[]): string {
+  const lines = paragraphs.map((p) => {
+    const start = formatTimestamp(p.start);
+    const end = formatTimestamp(p.end);
+    const speaker = p.speaker ? `<v ${p.speaker}>` : "";
+    return `${start} --> ${end}\n${speaker}${p.text.trim()}\n`;
+  });
+  return `WEBVTT\n\n${lines.join("\n")}`;
+}
+
+function paragraphsToTXT(paragraphs: Paragraph[]): string {
+  return paragraphs
+    .map((p) => {
+      const label = p.speaker ? `${p.speaker}:\n` : "";
+      return `${label}${p.text.trim()}`;
+    })
+    .join("\n\n");
+}
+
+function paragraphsToJSON(paragraphs: Paragraph[]): string {
+  return JSON.stringify(
+    paragraphs.map((p) => ({
+      start: p.start,
+      end: p.end,
+      speaker: p.speaker ?? undefined,
+      text: p.text.trim(),
+      segment_count: p.segment_count,
+    })),
+    null,
+    2
+  );
+}
+
+// --- Main export function ---
 
 export function exportTranscript(
   segments: Segment[],
+  paragraphs: Paragraph[],
+  viewMode: ViewMode,
   format: ExportFormat,
   filename: string
 ): void {
@@ -67,27 +110,52 @@ export function exportTranscript(
   let mimeType: string;
   let ext: string;
 
-  switch (format) {
-    case "srt":
-      content = toSRT(segments);
-      mimeType = "text/srt";
-      ext = "srt";
-      break;
-    case "vtt":
-      content = toVTT(segments);
-      mimeType = "text/vtt";
-      ext = "vtt";
-      break;
-    case "txt":
-      content = toTXT(segments);
-      mimeType = "text/plain";
-      ext = "txt";
-      break;
-    case "json":
-      content = toJSON(segments);
-      mimeType = "application/json";
-      ext = "json";
-      break;
+  if (viewMode === "para" && paragraphs.length > 0) {
+    switch (format) {
+      case "srt":
+        content = paragraphsToSRT(paragraphs);
+        mimeType = "text/srt";
+        ext = "srt";
+        break;
+      case "vtt":
+        content = paragraphsToVTT(paragraphs);
+        mimeType = "text/vtt";
+        ext = "vtt";
+        break;
+      case "txt":
+        content = paragraphsToTXT(paragraphs);
+        mimeType = "text/plain";
+        ext = "txt";
+        break;
+      case "json":
+        content = paragraphsToJSON(paragraphs);
+        mimeType = "application/json";
+        ext = "json";
+        break;
+    }
+  } else {
+    switch (format) {
+      case "srt":
+        content = segmentsToSRT(segments);
+        mimeType = "text/srt";
+        ext = "srt";
+        break;
+      case "vtt":
+        content = segmentsToVTT(segments);
+        mimeType = "text/vtt";
+        ext = "vtt";
+        break;
+      case "txt":
+        content = segmentsToTXT(segments);
+        mimeType = "text/plain";
+        ext = "txt";
+        break;
+      case "json":
+        content = segmentsToJSON(segments);
+        mimeType = "application/json";
+        ext = "json";
+        break;
+    }
   }
 
   const blob = new Blob([content], { type: mimeType });

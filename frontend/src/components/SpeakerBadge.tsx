@@ -14,8 +14,10 @@ function speakerIndex(speaker: string): number {
   return match ? parseInt(match[1], 10) % COLORS.length : 0;
 }
 
-export function speakerColor(speaker: string): string {
-  return COLORS[speakerIndex(speaker)];
+/** Get color for a speaker. Uses originalSpeaker (raw ID) when available so
+ *  renamed speakers keep their original color. */
+export function speakerColor(speaker: string, originalSpeaker?: string): string {
+  return COLORS[speakerIndex(originalSpeaker ?? speaker)];
 }
 
 export function speakerName(speaker: string): string {
@@ -28,10 +30,11 @@ export function speakerName(speaker: string): string {
 
 interface Props {
   speaker: string;
+  originalSpeaker?: string;
 }
 
-export default function SpeakerBadge({ speaker }: Props) {
-  const color = speakerColor(speaker);
+export default function SpeakerBadge({ speaker, originalSpeaker }: Props) {
+  const color = speakerColor(speaker, originalSpeaker);
   return (
     <span
       className="speaker-badge whitespace-nowrap"

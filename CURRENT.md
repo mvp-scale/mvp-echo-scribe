@@ -2,7 +2,7 @@
 
 ## Current State (2026-02-09)
 
-**Status**: ✅ **FULLY WORKING** - Transcription + Speaker Diarization on GPU
+**Status**: ✅ **v0.2.0 IN PROGRESS** - Core features implemented, iterating on UI polish
 **Location**: `/home/corey/projects/mvp-echo-toolbar/mvp-echo-studio/`
 **Container**: `mvp-scribe` running on RTX 3090 (24GB VRAM)
 **Ports**: 8001 (internal), mapped to 20301 externally
@@ -14,17 +14,19 @@
 
 **What We Have**: GPU-accelerated transcription service (NeMo Parakeet TDT 0.6B) + speaker diarization (Pyannote 3.1) running in Docker. OpenAI-compatible API. 15s to transcribe 17min audio.
 
-**What We're Building Next**:
-
-**v0.2.0 (Phase 1 - Core Features)**:
-- API key authentication (simple JSON file, LAN bypass)
-- Paragraph grouping (speaker-aware, silence-based)
-- Audio player with click-to-seek timestamps (mockup already shows this)
-- Speaker timeline, stats, search UI
-- Post-processing: filler removal, find/replace, profanity filter
-- Export: SRT, VTT, TXT, JSON
-- Speaker hints for better diarization (min/max/exact count)
-- Custom speaker labels (rename Speaker 0 → "Alice")
+**v0.2.0 Progress**:
+- ✅ API key authentication (LAN bypass + Bearer token)
+- ✅ Paragraph grouping (speaker-aware, silence-based) — backend + frontend
+- ✅ Audio player with click-to-seek timestamps
+- ✅ Speaker timeline, stats, search UI
+- ✅ Post-processing: filler removal, find/replace, confidence filter — **client-side real-time**
+- ✅ Export: SRT, VTT, TXT, JSON — **respects line-by-line vs paragraph view mode**
+- ✅ Speaker hints for diarization (min/max/exact count)
+- ✅ Custom speaker labels — **dynamic detection, real-time rename, colors preserved**
+- ✅ Two-panel layout matching mockup (Features/Code Sample left, results right)
+- ✅ Code Sample panel with live curl/Python generation
+- ✅ Separated upload from Run (configure settings before transcribing)
+- ✅ Audio Intelligence placeholder section (Phase 2/3 roadmap in UI)
 
 **v0.3.0 (Infrastructure + Multi-File Upload)**:
 - **Redis**: Enables multi-file concurrent upload (background job queue) - **very compelling**
@@ -71,17 +73,17 @@ All features organized by implementation phase with detailed planning tables.
 
 | Feature | Dependencies | Goals Alignment | Confidence | Status | Notes | Test Strategy |
 |---------|-------------|-----------------|-----------|--------|-------|---------------|
-| **API Key Validation** | `backend/api-keys.json` schema | Security, multi-user access | 🟢 | 📋 | Use existing `api-keys.json` format. Middleware checks Bearer token against active keys. | Create test keys, verify 401 on invalid, 200 on valid. Test LAN bypass logic. |
-| **Diarization (Min/Max/Exact Speakers)** | Pyannote pipeline already supports params | Accuracy improvement | 🟢 | 🔨 | `Diarizer.diarize()` at `diarization/__init__.py:54` accepts `num_speakers`, just needs API exposure at `api.py:74` | Upload 2-person call, set `num_speakers=2`, verify better accuracy vs auto-detect |
+| **API Key Validation** | `backend/api-keys.json` schema | Security, multi-user access | 🟢 | ✅ | Implemented in `auth.py`. Middleware checks Bearer token against active keys. LAN bypass working. | Create test keys, verify 401 on invalid, 200 on valid. Test LAN bypass logic. |
+| **Diarization (Min/Max/Exact Speakers)** | Pyannote pipeline already supports params | Accuracy improvement | 🟢 | ✅ | `num_speakers`, `min_speakers`, `max_speakers` exposed as API params and passed to Pyannote pipeline. | Upload 2-person call, set `num_speakers=2`, verify better accuracy vs auto-detect |
 | **Word-Level Timestamps** | NeMo `result.timestamp['word']` | Precision, word-hover UI | 🟢 | 🔨 | Already in model output, needs JSON response field `words: [...]` | Verify word timestamps align with segment timestamps. UI hover test. |
 | **Profanity Filter** | `better-profanity` pip package | Content moderation | 🟢 | 📋 | Regex-based, runs on segment text post-transcription. Add toggle to API. | Upload audio with profanity, toggle on, verify asterisk replacement. |
-| **Remove Filler Words** | None (pure regex) | Readability | 🟢 | 📋 | Strip "uh", "um", "like", "you know", "I mean", "sort of", "kind of" from `.text` | Upload conversational audio, toggle on, verify fillers removed. Manual review. |
-| **Find & Replace** | None (pure regex) | Jargon correction, brand names | 🟢 | 📋 | Accept array of `{find, replace}` rules. Apply regex substitution per segment. | Test with "gonna→going to", verify case-insensitive, whole-word match only. |
-| **Detect Paragraphs** | Silence gaps from existing timestamps | Readability, export quality | 🟢 | 📋 | Group consecutive same-speaker segments. Break on speaker change or silence > threshold (default 0.8s). | Upload 5min audio, verify paragraph grouping logical. Check SRT/VTT output. |
+| **Remove Filler Words** | None (pure regex) | Readability | 🟢 | ✅ | `remove_fillers=true` API param. Regex strips filler phrases with word-boundary matching. | Upload conversational audio, toggle on, verify fillers removed. Manual review. |
+| **Find & Replace** | None (pure regex) | Jargon correction, brand names | 🟢 | ✅ | `find_replace` JSON param. Escaped regex with whole-word, case-insensitive matching. | Test with "gonna→going to", verify case-insensitive, whole-word match only. |
+| **Detect Paragraphs** | Silence gaps from existing timestamps | Readability, export quality | 🟢 | ✅ | `detect_paragraphs=true` + `paragraph_silence_threshold` params. Groups by speaker + silence gap. Returns `paragraphs` array. | Upload 5min audio, verify paragraph grouping logical. Check SRT/VTT output. |
 | **Detect Utterances** | Existing segment timestamps | Alternative grouping | 🟢 | 📋 | Like paragraphs but ignore speaker labels—pure silence-based grouping. | Upload multi-speaker audio, verify utterances group correctly regardless of diarization. |
 | **Trim Audio (Start/End)** | ffmpeg already in `audio.py` | Long file processing | 🟢 | 📋 | Add `-ss {start}` and `-t {duration}` to ffmpeg conversion. Parse MM:SS format from API. | Upload 10min file, trim to 2:00-4:00, verify only that range transcribed. |
-| **Confidence Threshold** | `WhisperSegment` has `no_speech_prob`, `avg_logprob` fields in `models.py` | Noise filtering | 🟢 | 🔨 | Filter segments where `1 - no_speech_prob < threshold` or `avg_logprob < threshold`. Fields exist but not used. | Upload audio with silence/noise, set threshold 0.7, verify low-confidence segments dropped. |
-| **Custom Speaker Labels (UI)** | None (pure frontend) | UX, export quality | 🟢 | 📋 | Frontend-only: map `SPEAKER_0` → user-defined name in display + exports. | Rename speakers in UI, verify SRT/VTT/TXT use custom names. |
+| **Confidence Threshold** | `WhisperSegment` has `no_speech_prob`, `avg_logprob` fields in `models.py` | Noise filtering | 🟢 | ✅ | `min_confidence` param (0.0-1.0). Filters segments where `1 - no_speech_prob < threshold`. | Upload audio with silence/noise, set threshold 0.7, verify low-confidence segments dropped. |
+| **Custom Speaker Labels (UI)** | None (pure frontend) | UX, export quality | 🟢 | ✅ | Client-side real-time rename. Dynamic detection of speaker count. Colors preserved via `originalSpeaker` tracking. Auto-enabled when >1 speaker. Exports use renamed labels. | Rename speakers, verify colors persist, verify exports use custom names. |
 
 ---
 
@@ -91,11 +93,11 @@ All features organized by implementation phase with detailed planning tables.
 
 | Feature | Dependencies | Goals Alignment | Confidence | Status | Notes | Test Strategy |
 |---------|-------------|-----------------|-----------|--------|-------|---------------|
-| **Audio Playback with Timestamp Sync** | `<audio>` element, file already in browser | Core UX, verification workflow | 🟢 | 📋 | Create blob URL from uploaded file. Click segment → seek to `segment.start`. Highlight active segment as audio plays. | Upload audio, click timestamp, verify playback starts at correct moment. Verify active highlight follows playback. |
-| **Speaker Timeline Visualization** | Segment timestamps | Visual overview, quick navigation | 🟢 | 📋 | SVG or CSS horizontal bar. Each segment is a colored block positioned by `(start/duration)*100%`. Click block → seek audio. | Verify timeline matches transcript. Click blocks to seek. Check color coding. |
-| **Speaker Statistics** | Segment timestamps + text | Analytics, meeting insights | 🟢 | 📋 | Sum segment durations per speaker. Count words with `.split(/\s+/)`. Show talk time %, word count, talk-to-listen ratio. | Upload multi-speaker audio. Verify percentages sum to 100%. Verify word counts match. |
-| **Transcript Search with Highlighting** | None (pure frontend) | Findability in long transcripts | 🟢 | 📋 | Regex search across all segment text. Highlight matches with `<mark>`. Prev/Next navigation with scroll-to-view. Ctrl+F shortcut. | Search "onboarding" in 60min transcript, verify all matches found. Test prev/next nav. |
-| **Export Formats** | Existing segment data | Professional output | 🟢 | 📋 | Generate SRT, VTT, TXT, JSON, DOCX from segments/paragraphs. Use custom speaker labels if set. | Generate all 5 formats, verify timestamps, speaker labels, formatting correct. Open in VLC (SRT/VTT), Word (DOCX). |
+| **Audio Playback with Timestamp Sync** | `<audio>` element, file already in browser | Core UX, verification workflow | 🟢 | ✅ | `AudioPlayer.tsx` implemented with play/pause, skip, seek bar, click-to-seek from segments. Active segment highlighting in `TranscriptViewer.tsx`. | Upload audio, click timestamp, verify playback starts at correct moment. Verify active highlight follows playback. |
+| **Speaker Timeline Visualization** | Segment timestamps | Visual overview, quick navigation | 🟢 | ✅ | `SpeakerTimeline.tsx` — color-coded horizontal bar, click to seek, playhead tracks audio position. | Verify timeline matches transcript. Click blocks to seek. Check color coding. |
+| **Speaker Statistics** | Segment timestamps + text | Analytics, meeting insights | 🟢 | ✅ | Backend `compute_speaker_statistics()` + frontend `SpeakerStats.tsx` with per-speaker cards, percentage bars, word counts. | Upload multi-speaker audio. Verify percentages sum to 100%. Verify word counts match. |
+| **Transcript Search with Highlighting** | None (pure frontend) | Findability in long transcripts | 🟢 | ✅ | `SearchBar.tsx` with case-insensitive search, match count, highlight in `SpeakerSegment.tsx`. Prev/Next not yet implemented. | Search "onboarding" in 60min transcript, verify all matches found. Test prev/next nav. |
+| **Export Formats** | Existing segment data | Professional output | 🟢 | ✅ | SRT/VTT/TXT/JSON export in frontend `export.ts`. **Respects view mode**: paragraph view exports paragraphs, line-by-line exports segments. Custom speaker labels and post-processing applied. DOCX not yet implemented. | Switch view modes, export all 4 formats, verify output matches view. |
 
 ---
 
@@ -470,18 +472,18 @@ class TranscriptionRequest(BaseModel):
 
 | Feature | User Value | Implementation Effort | Priority | Target Release | Notes |
 |---------|-----------|----------------------|----------|----------------|-------|
-| **API Key Validation** | HIGH | Low (1-2 hours) | P0 | v0.2.0 | Foundation for multi-user access |
-| **Diarization Speaker Hints** | HIGH | Low (30 min) | P0 | v0.2.0 | Huge accuracy improvement for known speaker counts |
-| **Detect Paragraphs** | HIGH | Low (2-3 hours) | P0 | v0.2.0 | Essential for readable output |
-| **Custom Speaker Labels** | HIGH | Low (1 hour frontend) | P0 | v0.2.0 | Professional exports |
-| **Audio Playback + Timestamp Sync** | VERY HIGH | Medium (4-6 hours) | P0 | v0.2.0 | **Killer feature** - makes verification effortless |
-| **Export Formats (SRT/VTT/TXT/JSON)** | HIGH | Medium (4-5 hours) | P0 | v0.2.0 | Professional output, required for usability |
-| **Speaker Timeline Viz** | MEDIUM | Low (2 hours) | P1 | v0.2.0 | Great visual overview |
-| **Speaker Statistics** | MEDIUM | Low (1 hour) | P1 | v0.2.0 | Meeting analytics value |
-| **Transcript Search** | HIGH | Low (2-3 hours) | P1 | v0.2.0 | Essential for long transcripts |
-| **Remove Filler Words** | MEDIUM | Low (1 hour) | P1 | v0.2.0 | Easy readability win |
-| **Find & Replace** | MEDIUM | Low (2 hours) | P1 | v0.2.0 | Jargon/brand name correction |
-| **Profanity Filter** | MEDIUM | Low (30 min) | P1 | v0.2.0 | Content moderation |
+| **API Key Validation** | HIGH | Low | P0 | v0.2.0 | ✅ Done - `auth.py` with LAN bypass |
+| **Diarization Speaker Hints** | HIGH | Low | P0 | v0.2.0 | ✅ Done - `num_speakers`/`min_speakers`/`max_speakers` API params |
+| **Detect Paragraphs** | HIGH | Low | P0 | v0.2.0 | ✅ Done - `detect_paragraphs` + `paragraph_silence_threshold` API params |
+| **Custom Speaker Labels** | HIGH | Low | P0 | v0.2.0 | ✅ Done - Dynamic detection, real-time rename, colors preserved |
+| **Audio Playback + Timestamp Sync** | VERY HIGH | Medium | P0 | v0.2.0 | ✅ Done - `AudioPlayer.tsx` with click-to-seek |
+| **Export Formats (SRT/VTT/TXT/JSON)** | HIGH | Medium | P0 | v0.2.0 | ✅ Done - frontend `export.ts` + backend formatters |
+| **Speaker Timeline Viz** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - `SpeakerTimeline.tsx` with click-to-seek and playhead |
+| **Speaker Statistics** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - Backend + `SpeakerStats.tsx` frontend display |
+| **Transcript Search** | HIGH | Low | P1 | v0.2.0 | ✅ Done - `SearchBar.tsx` with highlighting |
+| **Remove Filler Words** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - `remove_fillers=true` API param |
+| **Find & Replace** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - `find_replace` JSON API param |
+| **Profanity Filter** | MEDIUM | Low | P1 | v0.2.0 | 📋 Needs `better-profanity` pip package |
 | **Redis Infrastructure** | MEDIUM | Medium (4-5 hours) | P1 | v0.3.0 | Enables job queue + rate limiting + usage tracking |
 | **Background Job Queue** | HIGH | Medium (3-4 hours w/ Redis) | P1 | v0.3.0 | **Multi-file upload** - very compelling |
 | **Word-Level Timestamps** | MEDIUM | Medium (2-3 hours + verification) | P2 | v0.3.0 | Nice-to-have, depends on NeMo output structure |
@@ -711,30 +713,37 @@ The `mockup.html` demonstrates all proposed features interactively. To implement
 
 ### Frontend (React + TypeScript)
 
-- [ ] Port mockup CSS to Tailwind classes (use MVP Scale design tokens)
-- [ ] Convert feature toggles to React state + settings panel component
-- [ ] Implement audio player component with Web Audio API for click-to-seek
-- [ ] Build speaker timeline component (color-coded horizontal bar, clickable)
-- [ ] Add speaker statistics display (talk time %, word count)
-- [ ] Implement transcript search with highlight and prev/next navigation
-- [ ] Wire up all export format generators: SRT, VTT, TXT, JSON (client-side)
-- [ ] Add loading states, error handling, file size validation, WebSocket progress (Phase 3)
+- [x] Port mockup CSS to Tailwind classes (MVP Scale design tokens)
+- [x] Convert feature toggles to React state + SettingsPanel component
+- [x] Implement audio player with click-to-seek (AudioPlayer.tsx)
+- [x] Build speaker timeline (SpeakerTimeline.tsx - color-coded, clickable, playhead)
+- [x] Add speaker statistics display (SpeakerStats.tsx - talk time %, word count, % bars)
+- [x] Implement transcript search with highlighting (SearchBar.tsx + SpeakerSegment.tsx)
+- [ ] Search prev/next navigation
+- [x] Wire up all export format generators: SRT, VTT, TXT, JSON (client-side, view-mode aware)
+- [x] Two-panel layout matching mockup (settings left, results right)
+- [x] Code Sample panel with live curl/Python generation
+- [x] Paragraph view + Line-by-line view with consistent styling
+- [x] Client-side post-processing (find/replace, speaker labels, filler removal — real-time)
+- [x] Speaker colors preserved on rename via originalSpeaker tracking
+- [x] Dynamic speaker label detection (auto-enabled when >1 speaker)
+- [ ] WebSocket progress (Phase 3)
 
 ### Backend (FastAPI + Python)
 
 **Phase 1 (v0.2.0)**:
-- [ ] Add API key middleware with LAN bypass (reads `backend/api-keys.json`)
-- [ ] Extend `/v1/audio/transcriptions` endpoint with Phase 1 params
-- [ ] Implement paragraph detection algorithm (speaker grouping + silence threshold)
-- [ ] Add filler word removal post-processor (regex on segment text)
-- [ ] Add find/replace engine (user-defined rules)
+- [x] Add API key middleware with LAN bypass (auth.py)
+- [x] Extend `/v1/audio/transcriptions` with Phase 1 params
+- [x] Implement paragraph detection algorithm (post_processing.py)
+- [x] Add filler word removal post-processor (regex)
+- [x] Add find/replace engine (user-defined rules)
 - [ ] Integrate `better-profanity` library for censoring
-- [ ] Expose speaker hints to diarization pipeline (`num_speakers`, `min_speakers`, `max_speakers`)
-- [ ] Add confidence filtering logic (use existing `no_speech_prob` field)
-- [ ] Implement trim audio (ffmpeg `-ss` and `-t` params)
-- [ ] Test word-level timestamps from NeMo output (check if available)
-- [ ] Update response schema: add `paragraphs`, `utterances`, `statistics` fields
-- [ ] Add speaker statistics calculation (duration %, word count per speaker)
+- [x] Expose speaker hints to diarization pipeline (num_speakers, min_speakers, max_speakers)
+- [x] Add confidence filtering logic (min_confidence param)
+- [ ] Implement trim audio (ffmpeg -ss and -t)
+- [ ] Test word-level timestamps from NeMo output
+- [x] Update response schema: paragraphs, statistics fields
+- [x] Add speaker statistics calculation (duration %, word count per speaker)
 
 **Phase 3 (v0.3.0)**:
 - [ ] Add Redis service to docker-compose
@@ -1066,4 +1075,52 @@ See Response Schema section above.
 
 **Last Updated**: 2026-02-09
 **Contributors**: Corey (dev), Claude (implementation)
-**Version**: v0.1.0 (working baseline) → targeting v0.2.0 (Phase 1 complete) → v0.3.0 (Redis + multi-file)
+**Version**: v0.1.0 (working baseline) → **v0.2.0 in progress** (iterating on UI polish) → v0.3.0 (Redis + multi-file)
+
+---
+
+### Implementation Log
+
+**Batch 1 Complete** — Backend post-processing pipeline:
+- ✅ `post_processing.py` - paragraph detection, filler removal, find/replace, confidence filtering, speaker stats, speaker labels
+- ✅ `models.py` - Paragraph, SpeakerStatistics, Statistics models added to TranscriptionResponse
+- ✅ `diarization/__init__.py` - min_speakers/max_speakers/num_speakers forwarded to Pyannote
+- ✅ `api.py` - All new Form params wired into post-processing pipeline
+
+**Batch 2 Complete** — Frontend overhaul (mockup alignment):
+- ✅ Two-panel layout: settings left (380px), results right
+- ✅ `SettingsPanel.tsx` - All feature toggles with API param display
+- ✅ `SpeakerTimeline.tsx` - Color-coded bar, click-to-seek, playhead
+- ✅ `SpeakerStats.tsx` - Per-speaker cards with % bars and word counts
+- ✅ `ParagraphView.tsx` - Paragraph-grouped transcript with search highlighting
+- ✅ `CodeSamplePanel.tsx` - Live curl/Python code generation from settings
+- ✅ Toolbar: Features/Code Sample tabs + green Run button
+- ✅ Upload separated from Run (configure before transcribing)
+- ✅ Audio Intelligence section with Phase 2/3 roadmap badges
+
+**Batch 3 Complete** — Client-side post-processing (real-time):
+- ✅ `post-processing.ts` - Find/replace, speaker labels, filler removal applied client-side instantly
+- ✅ `useMemo` recomputes displayed segments/paragraphs on every options change
+- ✅ Raw API data preserved as `rawSegments`/`rawParagraphs` (never mutated)
+- ✅ `originalSpeaker` field tracks raw speaker ID so colors survive rename
+
+**Batch 4 Complete** — UI polish and consistency:
+- ✅ Speaker colors preserved when renamed (via `originalSpeaker` in SpeakerBadge)
+- ✅ Speaker labels auto-enabled when >1 speaker detected (no toggle gate)
+- ✅ Line-by-line view redesigned: compact rows, speaker + time range + text on same line
+- ✅ Consistent visual language between paragraph and line-by-line views (same border, colors, fonts)
+- ✅ Full-row click-to-seek on line-by-line (not just timestamp button)
+- ✅ Removed duplicate output tabs — simplified to transcript view + export buttons
+- ✅ Export respects view mode: paragraph view → paragraph exports, line-by-line → segment exports
+
+### Remaining for v0.2.0
+- 📋 Profanity filter (needs `better-profanity` pip package)
+- 📋 Trim audio (ffmpeg `-ss`/`-t`)
+- 📋 Search prev/next navigation
+- 📋 Word-level timestamps (verify NeMo output structure)
+
+### Next: v0.3.0 (Infrastructure)
+- 📋 Redis infrastructure (job queue + rate limiting + pattern storage)
+- 📋 Multi-file concurrent upload (background jobs)
+- 📋 PII redaction (regex-based with user-uploadable patterns)
+- 📋 WebSocket progress updates

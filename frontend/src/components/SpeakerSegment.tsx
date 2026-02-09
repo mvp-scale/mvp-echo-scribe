@@ -1,6 +1,5 @@
 import type { Segment } from "../types";
-import { formatTime } from "../utils/format-time";
-import SpeakerBadge, { speakerColor } from "./SpeakerBadge";
+import { speakerColor, speakerName } from "./SpeakerBadge";
 
 interface Props {
   segment: Segment;
@@ -9,13 +8,20 @@ interface Props {
   onClickTimestamp?: (time: number) => void;
 }
 
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.round((seconds % 1) * 100);
+  return `${m}:${String(s).padStart(2, "0")}.${String(ms).padStart(2, "0")}`;
+}
+
 function highlightText(text: string, query: string) {
   if (!query) return text;
   const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const parts = text.split(new RegExp(`(${escaped})`, "gi"));
   return parts.map((part, i) =>
     part.toLowerCase() === query.toLowerCase() ? (
-      <mark key={i} className="bg-yellow-500/30 text-yellow-200 rounded px-0.5">
+      <mark key={i} className="bg-yellow-500/25 text-gray-200 rounded px-0.5">
         {part}
       </mark>
     ) : (
@@ -30,30 +36,33 @@ export default function SpeakerSegment({
   searchQuery,
   onClickTimestamp,
 }: Props) {
-  const borderColor = segment.speaker
-    ? speakerColor(segment.speaker)
-    : "transparent";
+  const color = segment.speaker
+    ? speakerColor(segment.speaker, segment.originalSpeaker)
+    : "var(--border)";
 
   return (
     <div
-      className={`flex gap-3 p-3 rounded-lg transition-colors ${
-        isActive ? "bg-mvp-blue/10" : "hover:bg-surface-2/50"
-      }`}
-      style={{ borderLeft: `3px solid ${borderColor}` }}
+      className={`flex items-baseline gap-3 px-3.5 py-1.5 border-l-[3px] cursor-pointer transition-colors
+        ${isActive ? "bg-mvp-blue/5" : "hover:bg-surface-2"}`}
+      style={{ borderLeftColor: color }}
+      onClick={() => onClickTimestamp?.(segment.start)}
     >
-      <button
-        onClick={() => onClickTimestamp?.(segment.start)}
-        className="text-xs text-gray-500 hover:text-mvp-blue-light tabular-nums shrink-0 mt-0.5 font-mono"
-        title="Jump to this time"
-      >
-        {formatTime(segment.start)}
-      </button>
-      <div className="flex flex-col gap-1 min-w-0">
-        {segment.speaker && <SpeakerBadge speaker={segment.speaker} />}
-        <p className="text-sm text-gray-200 leading-relaxed">
-          {searchQuery ? highlightText(segment.text, searchQuery) : segment.text}
-        </p>
+      {/* Speaker + timestamp (fixed width for alignment) */}
+      <div className="flex items-baseline gap-2 shrink-0 w-[200px]">
+        {segment.speaker && (
+          <span className="text-xs font-bold truncate" style={{ color }}>
+            {speakerName(segment.speaker)}
+          </span>
+        )}
+        <span className="text-[10px] font-mono text-gray-500 whitespace-nowrap">
+          {formatTime(segment.start)} &rarr; {formatTime(segment.end)}
+        </span>
       </div>
+
+      {/* Text */}
+      <span className="text-[13px] leading-relaxed text-gray-200 min-w-0">
+        {searchQuery ? highlightText(segment.text, searchQuery) : segment.text}
+      </span>
     </div>
   );
 }
