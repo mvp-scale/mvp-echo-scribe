@@ -146,6 +146,73 @@ def find_and_replace(segments: list, rules: List[Dict[str, str]]) -> list:
     return segments
 
 
+def _parse_flags(flags_str: str) -> int:
+    """Convert a JS-style flags string like 'gi' to Python re flags."""
+    flag_map = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
+    result = 0
+    for ch in flags_str:
+        if ch in flag_map:
+            result |= flag_map[ch]
+    return result
+
+
+def apply_text_rules(segments: list, rules: List[Dict]) -> list:
+    """Apply unified text rules (filler removal, find/replace, PII redaction).
+
+    Each rule is a dict with keys: find, replace, isRegex, flags, enabled.
+    Rules are applied in order to each segment's text.
+
+    The 'flags' field uses standard regex flag characters:
+      - 'g' = global (always applied, all occurrences replaced)
+      - 'i' = case-insensitive
+      - 'm' = multiline (^ and $ match line boundaries)
+      - 's' = dotall (. matches newlines)
+    Default flags: 'gi' (global, case-insensitive).
+
+    For literal (non-regex) rules, patterns are wrapped with word boundaries.
+    Regex rules are compiled as-is with the specified flags.
+
+    Args:
+        segments: List of WhisperSegment objects.
+        rules: List of rule dicts from the text_rules JSON parameter.
+
+    Returns:
+        The same segments list with text modified in-place.
+    """
+    compiled_rules = []
+    for rule in rules:
+        if not rule.get("enabled", True):
+            continue
+        find = rule.get("find", "")
+        if not find:
+            continue
+        replace = rule.get("replace", "")
+        is_regex = rule.get("isRegex", False)
+        re_flags = _parse_flags(rule.get("flags", "gi"))
+        try:
+            if is_regex:
+                pattern = re.compile(find, re_flags)
+            else:
+                pattern = re.compile(r"\b" + re.escape(find) + r"\b", re_flags)
+            compiled_rules.append((pattern, replace))
+        except re.error as e:
+            logger.warning(f"Invalid text rule pattern '{find}': {e}")
+
+    if not compiled_rules:
+        return segments
+
+    for seg in segments:
+        text = seg.text
+        for pattern, replacement in compiled_rules:
+            text = pattern.sub(replacement, text)
+        # Cleanup: collapse multi-spaces, fix orphaned commas
+        text = re.sub(r"  +", " ", text).strip()
+        text = re.sub(r",\s*,", ",", text)
+        seg.text = text
+
+    return segments
+
+
 def filter_by_confidence(segments: list, min_confidence: float) -> list:
     """Remove segments below a confidence threshold.
 

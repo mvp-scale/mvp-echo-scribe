@@ -28,6 +28,18 @@ export interface Statistics {
   total_speakers: number;
 }
 
+export interface DetectedEntity {
+  text: string;
+  label: string;
+  category: string;
+  count: number;
+}
+
+export interface DetectedTopic {
+  text: string;
+  count: number;
+}
+
 export interface TranscriptionResponse {
   text: string;
   segments?: Segment[];
@@ -36,7 +48,27 @@ export interface TranscriptionResponse {
   model?: string;
   paragraphs?: Paragraph[];
   statistics?: Statistics;
+  entities?: DetectedEntity[];
+  topics?: DetectedTopic[];
 }
+
+export interface TextRule {
+  name: string;
+  find: string;
+  replace: string;
+  isRegex: boolean;
+  flags: string;
+  category: "filler" | "replace" | "pii";
+  enabled: boolean;
+}
+
+export interface TextRuleset {
+  version: number;
+  name: string;
+  rules: TextRule[];
+}
+
+export type TextRuleCategory = "all" | "filler" | "replace" | "pii";
 
 export interface TranscriptionOptions {
   diarize: boolean;
@@ -45,20 +77,26 @@ export interface TranscriptionOptions {
   maxSpeakers?: number;
   detectParagraphs: boolean;
   paragraphSilenceThreshold: number;
-  removeFillers: boolean;
+  textRulesEnabled: boolean;
+  textRules: TextRule[];
+  textRuleCategory: TextRuleCategory;
   minConfidence: number;
-  findReplace: { find: string; replace: string }[];
   speakerLabels: Record<string, string>;
+  detectEntities: boolean;
+  detectTopics: boolean;
 }
 
 export const DEFAULT_OPTIONS: TranscriptionOptions = {
   diarize: true,
   detectParagraphs: true,
   paragraphSilenceThreshold: 0.8,
-  removeFillers: false,
+  textRulesEnabled: true,
+  textRules: [],
+  textRuleCategory: "all",
   minConfidence: 0.0,
-  findReplace: [],
   speakerLabels: {},
+  detectEntities: false,
+  detectTopics: false,
 };
 
 export interface HealthResponse {

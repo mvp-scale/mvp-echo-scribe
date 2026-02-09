@@ -39,6 +39,20 @@ class Statistics(BaseModel):
     total_speakers: int
 
 
+class Entity(BaseModel):
+    """A named entity detected in the transcript."""
+    text: str
+    label: str
+    category: str
+    count: int
+
+
+class Topic(BaseModel):
+    """A topic extracted from the transcript."""
+    text: str
+    count: int
+
+
 class TranscriptionResponse(BaseModel):
     """Response format for transcription"""
     text: str
@@ -49,6 +63,8 @@ class TranscriptionResponse(BaseModel):
     model: Optional[str] = None
     paragraphs: Optional[List[Paragraph]] = None
     statistics: Optional[Statistics] = None
+    entities: Optional[List[Entity]] = None
+    topics: Optional[List[Topic]] = None
 
     def dict(self, **kwargs):
         result = super().dict(**kwargs)
@@ -58,6 +74,10 @@ class TranscriptionResponse(BaseModel):
             result.pop("paragraphs", None)
         if not self.statistics:
             result.pop("statistics", None)
+        if not self.entities:
+            result.pop("entities", None)
+        if not self.topics:
+            result.pop("topics", None)
         return result
 
 

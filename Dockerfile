@@ -74,6 +74,9 @@ RUN pip install --no-cache-dir \
         -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt /tmp/torch-pins.txt
 
+# spaCy English model for entity detection and topic extraction (~12MB)
+RUN python3 -m spacy download en_core_web_sm
+
 # Packages that trigger pip resolution loops due to torch 2.7.0a0 pre-release pin.
 # ALL must use --no-deps to prevent pip from replacing NVIDIA's custom torch.
 RUN pip install --no-cache-dir --no-deps \

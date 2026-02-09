@@ -15,13 +15,19 @@ function buildCurlFlags(options: TranscriptionOptions): string[] {
   if (options.maxSpeakers != null)
     flags.push(`-F "max_speakers=${options.maxSpeakers}"`);
   if (options.detectParagraphs) flags.push('-F "detect_paragraphs=true"');
-  if (options.removeFillers) flags.push('-F "remove_fillers=true"');
   if (options.minConfidence > 0)
     flags.push(`-F "min_confidence=${options.minConfidence}"`);
-  if (options.findReplace.length > 0) {
-    const json = JSON.stringify(options.findReplace);
-    flags.push(`-F 'find_replace=${json}'`);
+  if (options.textRulesEnabled) {
+    const activeRules = options.textRules.filter((r) =>
+      r.enabled && (options.textRuleCategory === "all" || r.category === options.textRuleCategory)
+    );
+    if (activeRules.length > 0) {
+      const json = JSON.stringify(activeRules);
+      flags.push(`-F 'text_rules=${json}'`);
+    }
   }
+  if (options.detectEntities) flags.push('-F "detect_entities=true"');
+  if (options.detectTopics) flags.push('-F "detect_topics=true"');
   flags.push('-F "response_format=verbose_json"');
   return flags;
 }

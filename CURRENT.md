@@ -19,32 +19,33 @@
 - ✅ Paragraph grouping (speaker-aware, silence-based) — backend + frontend
 - ✅ Audio player with click-to-seek timestamps
 - ✅ Speaker timeline, stats, search UI
-- ✅ Post-processing: filler removal, find/replace, confidence filter — **client-side real-time**
+- ✅ Post-processing: confidence filter — **client-side real-time**
+- ✅ **Unified Text Rules system** — JSON-based filler removal, PII redaction, text replacements with per-rule regex flags, import/export, category pills (All/Fillers/PII/Replace), toggle on/off
 - ✅ Export: SRT, VTT, TXT, JSON — **respects line-by-line vs paragraph view mode**
 - ✅ Speaker hints for diarization (min/max/exact count)
 - ✅ Custom speaker labels — **dynamic detection, real-time rename, colors preserved**
 - ✅ Two-panel layout matching mockup (Features/Code Sample left, results right)
 - ✅ Code Sample panel with live curl/Python generation
 - ✅ Separated upload from Run (configure settings before transcribing)
-- ✅ Audio Intelligence placeholder section (Phase 2/3 roadmap in UI)
+- ✅ **Entity Detection** — spaCy NER (PERSON, ORG, GPE, DATE, MONEY, etc.) with color-coded tag display
+- ✅ **Topic Detection** — spaCy noun phrase extraction, most-discussed subjects
+- ✅ Audio Intelligence section: Entity Detection + Topic Detection live, Sentiment + Summarization Phase 3
 
 **v0.3.0 (Infrastructure + Multi-File Upload)**:
 - **Redis**: Enables multi-file concurrent upload (background job queue) - **very compelling**
-- Redis also handles: rate limiting, usage tracking, custom PII pattern storage
+- Redis also handles: rate limiting, usage tracking
 - WebSocket progress updates for long files
-- Simple regex-based PII redaction (SSN, CC, email, phone + user-uploadable patterns)
 
 **Key Architectural Decisions**:
-1. **Redis for everything infrastructure**: Job queue (multi-file) + rate limiting + usage tracking + pattern storage. Single dependency, multiple benefits.
-2. **Regex over ML for PII**: Simple, fast, user-configurable. No model downloads. Good enough for MVP.
-3. **No heavy AI models for MVP**: Skip entity detection, sentiment until there's proven demand.
+1. **Unified Text Rules over separate features**: Filler removal, find/replace, and PII redaction are all the same operation (pattern match → replacement). Single JSON-based system with import/export replaces three separate mechanisms.
+2. **spaCy for entity/topic detection**: Lightweight (~12MB model), runs on CPU, no GPU needed. Gives PERSON/ORG/GPE/DATE/MONEY entity detection and noun-phrase topic extraction.
+3. **No Redis for PII patterns**: Text Rules JSON import/export eliminates need for Redis-backed pattern storage. Users manage rules via JSON files.
+4. **No `better-profanity` dependency**: Profanity filtering = community text rules preset. Users import a JSON with profanity patterns.
 
 **Not Doing for MVP**:
-- Channel-per-speaker, inline editing, per-word confidence, entity detection, HIPAA certification
+- Channel-per-speaker, inline editing, per-word confidence, HIPAA certification
 - LLM features (future paid tier)
-
-**Maybe (Discuss First)**:
-- Sentiment analysis - need to justify value vs model download overhead
+- Sentiment analysis (needs actual ML model, not worth it for MVP)
 
 ---
 
@@ -257,73 +258,45 @@ def log_usage(api_key: str, metadata: dict):
 
 ---
 
-## PII Redaction Pattern Upload Workflow
+## Text Rules System (Replaces PII Redaction Workflow)
 
-**Goal**: Let users add domain-specific redaction patterns without code changes.
+**Approach**: Unified JSON-based text processing. Filler removal, PII redaction, and text replacements are all the same operation: pattern match → replacement. Users manage rules via JSON import/export. No Redis, no separate endpoints.
 
-**Example Use Case**: Medical office wants to redact patient IDs and medical record numbers.
-
-**Step 1: User Creates Pattern JSON**
+**JSON Schema**:
 ```json
 {
-  "patterns": [
+  "version": 1,
+  "name": "Echo Studio Text Rules",
+  "rules": [
     {
-      "name": "Medical_Record",
-      "pattern": "MR-\\d{6}",
-      "replacement": "[MRN]"
+      "name": "Remove 'um'",
+      "find": "um",
+      "replace": "",
+      "isRegex": false,
+      "flags": "gi",
+      "category": "filler",
+      "enabled": true
     },
     {
-      "name": "Patient_ID",
-      "pattern": "PT\\d{8}",
-      "replacement": "[PATIENT_ID]"
-    },
-    {
-      "name": "Account_Number",
-      "pattern": "ACCT-[A-Z0-9]{10}",
-      "replacement": "[ACCOUNT]"
+      "name": "Redact SSN",
+      "find": "\\d{3}-\\d{2}-\\d{4}",
+      "replace": "[SSN]",
+      "isRegex": true,
+      "flags": "g",
+      "category": "pii",
+      "enabled": true
     }
   ]
 }
 ```
 
-**Step 2: Upload Patterns**
-```bash
-curl -X POST \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-corey-2026" \
-  -d @redaction-patterns.json \
-  http://192.168.1.10:20301/redaction/patterns
-```
+**Rule fields**: `name` (label), `find` (pattern), `replace` (substitution, empty=delete), `isRegex` (false=word-boundary literal, true=raw regex), `flags` (regex flags: g/i/m/s), `category` (filler/pii/replace — drives pill filter), `enabled` (toggle).
 
-**Response**:
-```json
-{"status": "success", "pattern_count": 3, "stored_in_redis": true}
-```
+**UI**: Toggle on/off, category pills with counts (All/Fillers/PII/Replace), status message, Import JSON / Export JSON / Defaults buttons. Pills select which category runs.
 
-**Step 3: Use in Transcription**
-```bash
-curl -X POST \
-  -F "file=@medical-consultation.mp3" \
-  -F "redact_pii=true" \
-  http://192.168.1.10:20301/v1/audio/transcriptions
-```
+**Default ruleset**: 17 rules — 7 fillers, 5 PII regex, 5 text replacements. Ships pre-loaded.
 
-**Result**: All built-in patterns (SSN, email, phone, CC) + custom patterns (MR-*, PT*, ACCT-*) are applied. Transcript text shows:
-- "Social Security [SSN]"
-- "Medical record [MRN]"
-- "Patient ID [PATIENT_ID]"
-- "Account [ACCOUNT]"
-
-**Pattern Management**:
-- GET `/redaction/patterns` → list all active patterns (built-in + custom)
-- POST `/redaction/patterns` → replace custom patterns (overwrites previous)
-- DELETE `/redaction/patterns` → clear custom patterns (keep built-in only)
-
-**Redis Storage**:
-- Key: `redaction:patterns`
-- Value: JSON array of pattern objects
-- Persistence: Redis append-only file (survives container restart)
-- Per-user patterns (future): `redaction:patterns:{api_key}`
+**Custom patterns**: Users export JSON, edit (or ask AI to generate rules), import back. No server-side storage needed.
 
 ---
 
@@ -388,17 +361,17 @@ class TranscriptionRequest(BaseModel):
     # Phase 1: Post-Processing
     detect_paragraphs: bool = False
     paragraph_silence_threshold: float = 0.8
-    detect_utterances: bool = False
-    utterance_silence_threshold: float = 0.8
-    remove_fillers: bool = False
-    filter_profanity: bool = False
     min_confidence: float = 0.0  # 0.0-1.0
-    find_replace: Optional[List[Dict[str, str]]] = None  # [{"find": "gonna", "replace": "going to"}]
+    text_rules: Optional[str] = None  # JSON array of TextRule objects (unified filler/PII/replace)
     speaker_labels: Optional[Dict[str, str]] = None  # {"SPEAKER_0": "Alice", "SPEAKER_1": "Bob"}
 
-    # Phase 3: Optional Features
-    redact_pii: bool = False  # Regex-based PII masking (SSN, CC, email, phone + custom patterns)
-    language_detection: bool = False  # Only if NeMo outputs it natively (otherwise skip)
+    # Audio Intelligence (spaCy)
+    detect_entities: bool = False  # NER: PERSON, ORG, GPE, DATE, MONEY, etc.
+    detect_topics: bool = False  # Noun phrase frequency extraction
+
+    # Legacy (backward compat, ignored when text_rules present)
+    remove_fillers: bool = False
+    find_replace: Optional[List[Dict[str, str]]] = None
 ```
 
 ### Response (verbose_json)
@@ -453,14 +426,15 @@ class TranscriptionRequest(BaseModel):
     "total_speakers": 3
   },
 
-  "redactions": {  // if redact_pii=true
-    "total_count": 4,
-    "by_pattern": {
-      "SSN": 1,
-      "Email": 1,
-      "Phone_US": 2
-    }
-  }
+  "entities": [  // if detect_entities=true (spaCy NER)
+    {"text": "John", "label": "PERSON", "category": "People", "count": 3},
+    {"text": "Acme Corp", "label": "ORG", "category": "Organizations", "count": 2}
+  ],
+
+  "topics": [  // if detect_topics=true (noun phrase frequency)
+    {"text": "product review", "count": 5},
+    {"text": "Q4 metrics", "count": 3}
+  ]
 }
 ```
 
@@ -481,9 +455,9 @@ class TranscriptionRequest(BaseModel):
 | **Speaker Timeline Viz** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - `SpeakerTimeline.tsx` with click-to-seek and playhead |
 | **Speaker Statistics** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - Backend + `SpeakerStats.tsx` frontend display |
 | **Transcript Search** | HIGH | Low | P1 | v0.2.0 | ✅ Done - `SearchBar.tsx` with highlighting |
-| **Remove Filler Words** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - `remove_fillers=true` API param |
-| **Find & Replace** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - `find_replace` JSON API param |
-| **Profanity Filter** | MEDIUM | Low | P1 | v0.2.0 | 📋 Needs `better-profanity` pip package |
+| **Unified Text Rules** | HIGH | Medium | P1 | v0.2.0 | ✅ Done - Replaces filler removal, find/replace, profanity filter. JSON import/export, per-rule regex flags, category pills. |
+| **Entity Detection** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - spaCy NER (PERSON, ORG, GPE, DATE, MONEY). Color-coded tags in UI. |
+| **Topic Detection** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - spaCy noun phrase extraction. Frequency-based topic tags. |
 | **Redis Infrastructure** | MEDIUM | Medium (4-5 hours) | P1 | v0.3.0 | Enables job queue + rate limiting + usage tracking |
 | **Background Job Queue** | HIGH | Medium (3-4 hours w/ Redis) | P1 | v0.3.0 | **Multi-file upload** - very compelling |
 | **Word-Level Timestamps** | MEDIUM | Medium (2-3 hours + verification) | P2 | v0.3.0 | Nice-to-have, depends on NeMo output structure |
@@ -810,140 +784,15 @@ docker exec mvp-scribe python3 -c "from pyannote.audio import Pipeline; print('O
 
 **Optional enhancement**: Use sentence tokenizer (nltk.punkt) to avoid breaking mid-sentence.
 
-### C. PII Redaction Implementation (Simple Regex Approach)
+### C. Text Rules Engine (Replaced PII Redaction + Redis Pattern Storage)
 
-**No external libraries, no model downloads.** Pure regex + user-uploadable patterns.
+**Superseded**: The separate PII regex system and Redis pattern storage have been replaced by the unified Text Rules system. See "Text Rules System" section above.
 
-**Built-in Patterns** (shipped with backend):
+**Key files**: `frontend/src/utils/text-rule-presets.ts` (defaults), `frontend/src/utils/post-processing.ts` (engine), `backend/post_processing.py` (`apply_text_rules()`), `backend/entity_detection.py` (spaCy NER).
 
-```python
-# backend/pii_patterns.py
-DEFAULT_PATTERNS = [
-    {"name": "SSN", "pattern": r"\b\d{3}-\d{2}-\d{4}\b", "replacement": "[SSN]"},
-    {"name": "Credit_Card", "pattern": r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b", "replacement": "[CREDIT_CARD]"},
-    {"name": "Email", "pattern": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "replacement": "[EMAIL]"},
-    {"name": "Phone_US", "pattern": r"\b(\+?1[\s-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b", "replacement": "[PHONE]"},
-    {"name": "IP_Address", "pattern": r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "replacement": "[IP]"},
-]
-```
-
-**User-Uploadable Patterns** (stored in Redis):
-
-Upload JSON to `/redaction/patterns` endpoint:
-```json
-{
-  "patterns": [
-    {"name": "Medical_Record", "pattern": "MR-\\d{6}", "replacement": "[MRN]"},
-    {"name": "Patient_ID", "pattern": "PT\\d{8}", "replacement": "[PATIENT_ID]"},
-    {"name": "Account_Number", "pattern": "ACCT-[A-Z0-9]{10}", "replacement": "[ACCOUNT]"}
-  ]
-}
-```
-
-**Backend Implementation**:
-```python
-import re
-import redis
-
-# Load on startup
-redis_client = redis.Redis(host='redis', decode_responses=True)
-compiled_patterns = {}
-
-def load_patterns():
-    """Load default + user patterns, pre-compile regexes."""
-    global compiled_patterns
-    patterns = DEFAULT_PATTERNS.copy()
-
-    # Load user patterns from Redis
-    user_patterns = redis_client.get("redaction:patterns")
-    if user_patterns:
-        patterns.extend(json.loads(user_patterns))
-
-    # Pre-compile all patterns
-    for p in patterns:
-        compiled_patterns[p["name"]] = {
-            "regex": re.compile(p["pattern"], re.IGNORECASE),
-            "replacement": p["replacement"]
-        }
-
-def redact_text(text: str) -> tuple[str, dict]:
-    """Apply all patterns to text, return redacted text + counts."""
-    redacted = text
-    counts = {}
-
-    for name, pattern_data in compiled_patterns.items():
-        matches = pattern_data["regex"].findall(redacted)
-        if matches:
-            counts[name] = len(matches)
-            redacted = pattern_data["regex"].sub(pattern_data["replacement"], redacted)
-
-    return redacted, counts
-```
-
-**API Endpoints**:
-```python
-# Upload custom patterns
-@app.post("/redaction/patterns")
-async def upload_redaction_patterns(patterns: List[PatternDefinition], api_key: str = Depends(verify_api_key)):
-    """Upload custom PII regex patterns. Stored in Redis, persisted across requests."""
-    redis_client.set("redaction:patterns", json.dumps([p.dict() for p in patterns]))
-    load_patterns()  # Recompile
-    return {"status": "success", "pattern_count": len(patterns)}
-
-# Get current patterns
-@app.get("/redaction/patterns")
-async def get_redaction_patterns(api_key: str = Depends(verify_api_key)):
-    """Return all active patterns (built-in + custom)."""
-    return {"patterns": list(compiled_patterns.keys())}
-```
-
-**Testing**:
-```bash
-# Test built-in patterns
-curl -X POST -F "file=@test.mp3" -F "redact_pii=true" http://localhost:20301/v1/audio/transcriptions
-# Transcript with "SSN 123-45-6789" → "SSN [SSN]"
-
-# Upload custom patterns
-curl -X POST -H "Content-Type: application/json" \
-  -d '{"patterns":[{"name":"MRN","pattern":"MR-\\d{6}","replacement":"[MRN]"}]}' \
-  http://localhost:20301/redaction/patterns
-
-# Test custom pattern
-curl -X POST -F "file=@medical.mp3" -F "redact_pii=true" http://localhost:20301/v1/audio/transcriptions
-# "Medical record MR-123456" → "Medical record [MRN]"
-```
-
-**Advantages**:
-- Zero dependencies (no model downloads)
-- Fast (pure regex, pre-compiled)
-- Flexible (users add domain-specific patterns)
-- Persistent (Redis storage)
-- Simple to test and debug
-
-**Limitations**:
-- Won't catch names (no NER)
-- May have false positives (normal numbers matching patterns)
-- Users responsible for pattern quality
-
-### D. Redis Pattern Storage Strategy
-
-**Key**: `redaction:patterns` → JSON string of pattern array
-
-**On startup**:
-1. Load DEFAULT_PATTERNS from `pii_patterns.py`
-2. Check Redis for `redaction:patterns`
-3. Merge + compile all patterns into `compiled_patterns` dict
-
-**On pattern upload**:
-1. Validate JSON structure
-2. Test-compile each regex pattern (catch syntax errors)
-3. Save to Redis `redaction:patterns`
-4. Reload + recompile all patterns
-
-**Pattern versioning** (optional future enhancement):
-- Store patterns per API key: `redaction:patterns:{api_key}`
-- Each user can have custom patterns
-- For MVP: single global pattern set is fine
+**Two layers of data protection**:
+1. **Text Rules** (regex): Pattern-based filler removal, PII redaction, text replacements. User-managed via JSON import/export.
+2. **Entity Detection** (spaCy NER): Semantic entity recognition — people, organizations, locations, dates, money. Toggle in Audio Intelligence section.
 
 ### E. Export Format Specifications
 
@@ -998,8 +847,8 @@ See Response Schema section above.
 | **Channel per Speaker** | Niche use case (stereo call recordings only). Standard diarization works for 99% of audio. | Call center users specifically request stereo channel assignment. |
 | **Inline Transcript Editing** | Users export and edit in their tool of choice (Word, Docs, text editor). Over-engineering the UI. | Users request collaborative editing or version history features. |
 | **Per-Word Confidence Scores** | Segment-level confidence is sufficient. Word-level adds complexity with minimal value for MVP. | Quality visualization becomes a priority use case. |
-| **Entity Detection (NER)** | Would require downloading transformers models (~400MB+) and GPU memory. Not worth it for MVP POC. | Business intelligence use cases emerge where tagging people/orgs/locations is high value. |
-| **HIPAA Compliance (Full)** | Over-engineered for MVP. Simple regex PII redaction is enough. Don't need Presidio, spaCy, comprehensive coverage. | Healthcare customers require certified HIPAA compliance and are willing to pay for it. |
+| **Entity Detection (NER)** | ✅ **MOVED TO DONE** — spaCy en_core_web_sm (~12MB, CPU) added for entity + topic detection. | N/A — implemented. |
+| **HIPAA Compliance (Full)** | Over-engineered for MVP. Text Rules + spaCy entity detection covers basic PII needs. | Healthcare customers require certified HIPAA compliance and are willing to pay for it. |
 
 ---
 
@@ -1044,32 +893,26 @@ See Response Schema section above.
 - Focus on the big value features (audio player with click-to-seek, paragraph grouping, multi-file upload)
 
 **What We're NOT Doing for MVP**:
-- ❌ HIPAA compliance certification (just simple PII filtering)
-- ❌ NER models for entity detection (removed entirely)
-- ❌ Complex libraries (Presidio, spaCy, transformers for MVP)
+- ❌ HIPAA compliance certification (Text Rules + spaCy covers basic PII)
 - ❌ Per-word confidence scores (segment-level sufficient)
 - ❌ Inline editing (users export and edit elsewhere)
 - ❌ Channel-per-speaker (niche)
 - ❌ LLM integration (future, not POC)
+- ❌ Sentiment analysis (needs actual ML model, not justified for MVP)
 
 **What We ARE Doing**:
-- ✅ Regex-based PII redaction with user-uploadable custom patterns
-- ✅ Multi-file concurrent upload (Redis job queue)
+- ✅ Unified Text Rules (JSON-based filler removal, PII redaction, replacements with import/export)
+- ✅ spaCy entity detection (PERSON, ORG, GPE, DATE, MONEY) + topic extraction
 - ✅ Audio playback with timestamp sync (killer feature)
 - ✅ Speaker timeline + stats + search
-- ✅ Paragraph grouping, filler removal, find/replace
+- ✅ Paragraph grouping, confidence filter
 - ✅ Simple API key auth (JSON file, LAN bypass)
 - ✅ Export SRT/VTT/TXT/JSON
 
 **Redis Consolidation Decision**:
-- Use Redis for: job queue (multi-file upload) + rate limiting + usage tracking + pattern storage
-- One dependency, multiple benefits
+- Use Redis for: job queue (multi-file upload) + rate limiting + usage tracking
+- PII pattern storage no longer needs Redis (Text Rules JSON replaces it)
 - Can disable for single-user/LAN-only if needed
-
-**Sentiment Analysis**:
-- On hold - need to discuss if value justifies model download
-- If yes, add to Phase 3 end
-- If no, skip entirely
 
 ---
 
@@ -1113,14 +956,47 @@ See Response Schema section above.
 - ✅ Removed duplicate output tabs — simplified to transcript view + export buttons
 - ✅ Export respects view mode: paragraph view → paragraph exports, line-by-line → segment exports
 
+### Architecture Decisions Made This Session
+- **Client-side post-processing**: Find/replace, speaker labels, and filler removal run in the browser via `useMemo`. No server round-trip needed. Server-side post-processing kept for API/curl consumers.
+- **Raw vs display data**: API returns `rawSegments`/`rawParagraphs` (never mutated). `applyPostProcessing()` produces display versions that react to settings changes instantly.
+- **originalSpeaker tracking**: When speakers are renamed, the original API ID is preserved in `originalSpeaker` field so `speakerColor()` can resolve the correct color.
+- **Upload/Run separation**: File selection and transcription are decoupled. User picks a file, configures settings, then clicks Run. Settings can be changed after transcription and post-processing updates in real-time.
+- **View-mode-aware exports**: Export buttons check `viewMode` — paragraph view exports paragraph-grouped data, line-by-line exports individual segments.
+- **No output tabs**: Removed Transcript/JSON/SRT/VTT/TXT tab switcher to avoid confusion with export buttons. Right panel always shows transcript view.
+- **Subagents over Agent Teams**: For this project's file structure (tight coupling in api.py, models.py), subagents orchestrated by a single session are more effective than Agent Teams. Revisit for v0.3.0 when backend/infra work is more parallelizable.
+
+### Key Files Modified This Session
+**Backend**: `api.py`, `models.py`, `diarization/__init__.py`, `post_processing.py` (new)
+**Frontend**: `App.tsx`, `types.ts`, `api.ts`, `SettingsPanel.tsx` (new), `CodeSamplePanel.tsx` (new), `SpeakerTimeline.tsx` (new), `SpeakerStats.tsx` (new), `ParagraphView.tsx` (new), `SpeakerSegment.tsx` (rewritten), `SpeakerBadge.tsx`, `ExportBar.tsx`, `Layout.tsx`, `utils/post-processing.ts` (new), `utils/export.ts`
+
+**Batch 5 Complete** — Unified Text Rules system:
+- ✅ Replaced separate filler removal toggle + find/replace editor with unified Text Rules
+- ✅ JSON-based: import/export single file with all rules across categories
+- ✅ Category pills (All/Fillers/PII/Replace) select which rules run
+- ✅ Per-rule regex `flags` field: `"gi"` (case-insensitive), `"g"` (case-sensitive), `"gm"` (multiline), etc.
+- ✅ Toggle on/off for entire Text Rules system (consistent with other post-processing options)
+- ✅ Default ruleset ships with 17 rules: 7 fillers, 5 PII regex, 5 replacements
+- ✅ Defaults button resets to built-in ruleset
+- ✅ localStorage persistence (versioned key, auto-clears stale data)
+- ✅ Backend `apply_text_rules()` with same per-rule flags engine
+- ✅ Backward compatible: legacy `remove_fillers`/`find_replace` params still work via API
+- ✅ Eliminated need for: `better-profanity` pip dep, Redis PII pattern storage, `/redaction/patterns` endpoint
+
+**Batch 6 Complete** — spaCy Entity Detection + Topic Extraction:
+- ✅ Added `spacy` + `en_core_web_sm` model (~12MB) to Docker image
+- ✅ `entity_detection.py` — NER extraction (PERSON, ORG, GPE, DATE, MONEY, etc.) + noun-phrase topic extraction
+- ✅ `detect_entities` and `detect_topics` API params
+- ✅ Entity/topic results in `TranscriptionResponse` (entities array, topics array)
+- ✅ Frontend toggles in Audio Intelligence section (no longer grayed out)
+- ✅ Color-coded entity tags (purple=people, blue=orgs, green=locations, yellow=dates) + topic tags
+- ✅ `redact_entities()` function ready for entity-type-based redaction (wired but not yet exposed in UI)
+
 ### Remaining for v0.2.0
-- 📋 Profanity filter (needs `better-profanity` pip package)
 - 📋 Trim audio (ffmpeg `-ss`/`-t`)
 - 📋 Search prev/next navigation
 - 📋 Word-level timestamps (verify NeMo output structure)
 
 ### Next: v0.3.0 (Infrastructure)
-- 📋 Redis infrastructure (job queue + rate limiting + pattern storage)
+- 📋 Redis infrastructure (job queue + rate limiting)
 - 📋 Multi-file concurrent upload (background jobs)
-- 📋 PII redaction (regex-based with user-uploadable patterns)
 - 📋 WebSocket progress updates

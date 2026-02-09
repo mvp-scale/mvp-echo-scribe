@@ -25,18 +25,31 @@ export async function transcribe(
   // Post-processing
   form.append("detect_paragraphs", String(options.detectParagraphs));
   form.append("paragraph_silence_threshold", String(options.paragraphSilenceThreshold));
-  form.append("remove_fillers", String(options.removeFillers));
 
   if (options.minConfidence > 0) {
     form.append("min_confidence", String(options.minConfidence));
   }
 
-  if (options.findReplace.length > 0) {
-    form.append("find_replace", JSON.stringify(options.findReplace));
+  // Text rules filtered by active category (only if enabled)
+  if (options.textRulesEnabled) {
+    const activeRules = options.textRules.filter((r) =>
+      r.enabled && (options.textRuleCategory === "all" || r.category === options.textRuleCategory)
+    );
+    if (activeRules.length > 0) {
+      form.append("text_rules", JSON.stringify(activeRules));
+    }
   }
 
   if (Object.keys(options.speakerLabels).length > 0) {
     form.append("speaker_labels", JSON.stringify(options.speakerLabels));
+  }
+
+  // Audio intelligence
+  if (options.detectEntities) {
+    form.append("detect_entities", "true");
+  }
+  if (options.detectTopics) {
+    form.append("detect_topics", "true");
   }
 
   const res = await fetch(`${BASE}/v1/audio/transcriptions`, {

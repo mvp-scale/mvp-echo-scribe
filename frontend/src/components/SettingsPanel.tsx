@@ -1,4 +1,6 @@
-import { type TranscriptionOptions } from "../types";
+import { useRef } from "react";
+import { type TranscriptionOptions, type TextRule, type TextRuleset, type TextRuleCategory } from "../types";
+import { DEFAULT_TEXT_RULES } from "../utils/text-rule-presets";
 
 interface Props {
   options: TranscriptionOptions;
@@ -68,7 +70,29 @@ function NumberInput({
   );
 }
 
+function parseRules(text: string): TextRule[] | null {
+  try {
+    const parsed = JSON.parse(text);
+    // Accept bare array or envelope with rules array
+    const rules: unknown[] = Array.isArray(parsed) ? parsed : parsed?.rules;
+    if (!Array.isArray(rules)) return null;
+    return rules.map((r: any) => ({
+      name: r.name ?? "",
+      find: r.find ?? "",
+      replace: r.replace ?? "",
+      isRegex: r.isRegex ?? false,
+      flags: r.flags ?? "gi",
+      category: r.category ?? "replace",
+      enabled: r.enabled ?? true,
+    }));
+  } catch {
+    return null;
+  }
+}
+
 export default function SettingsPanel({ options, onChange, disabled, detectedSpeakers = [] }: Props) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const set = <K extends keyof TranscriptionOptions>(
     key: K,
     value: TranscriptionOptions[K]
@@ -76,26 +100,64 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
     onChange({ ...options, [key]: value });
   };
 
-  const addFindReplace = () => {
-    set("findReplace", [...options.findReplace, { find: "", replace: "" }]);
+  const handleReset = () => {
+    set("textRules", DEFAULT_TEXT_RULES.map((r) => ({ ...r })));
+    set("textRuleCategory", "all");
   };
 
-  const removeFindReplace = (index: number) => {
-    set(
-      "findReplace",
-      options.findReplace.filter((_, i) => i !== index)
-    );
+  const handleImport = () => fileInputRef.current?.click();
+
+  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const rules = parseRules(reader.result as string);
+      if (rules) set("textRules", rules);
+    };
+    reader.readAsText(file);
+    e.target.value = "";
   };
 
-  const updateFindReplace = (
-    index: number,
-    field: "find" | "replace",
-    value: string
-  ) => {
-    const updated = [...options.findReplace];
-    updated[index] = { ...updated[index], [field]: value };
-    set("findReplace", updated);
+  const handleExport = () => {
+    const ruleset: TextRuleset = {
+      version: 1,
+      name: "Echo Studio Text Rules",
+      rules: options.textRules,
+    };
+    const blob = new Blob([JSON.stringify(ruleset, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "text-rules.json";
+    a.click();
+    URL.revokeObjectURL(url);
   };
+
+  const totalCount = options.textRules.length;
+  const fillerCount = options.textRules.filter((r) => r.category === "filler").length;
+  const piiCount = options.textRules.filter((r) => r.category === "pii").length;
+  const replaceCount = options.textRules.filter((r) => r.category === "replace").length;
+
+  const activeCategory = options.textRuleCategory;
+  const activeCount = activeCategory === "all"
+    ? totalCount
+    : options.textRules.filter((r) => r.category === activeCategory).length;
+
+  const categories: { key: TextRuleCategory; label: string; count: number }[] = [
+    { key: "all", label: "All", count: totalCount },
+    { key: "filler", label: "Fillers", count: fillerCount },
+    { key: "pii", label: "PII", count: piiCount },
+    { key: "replace", label: "Replace", count: replaceCount },
+  ];
+
+  const statusLabel = activeCategory === "all"
+    ? `${activeCount} rules applied`
+    : activeCategory === "filler"
+    ? `${activeCount} filler rules applied`
+    : activeCategory === "pii"
+    ? `${activeCount} PII rules applied`
+    : `${activeCount} replace rules applied`;
 
   return (
     <div className="p-5 space-y-6 text-sm">
@@ -209,26 +271,6 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
           )}
         </div>
 
-        {/* Remove Fillers */}
-        <div className="py-2.5">
-          <div className="flex items-start gap-2.5">
-            <Toggle
-              checked={options.removeFillers}
-              onChange={(v) => set("removeFillers", v)}
-              disabled={disabled}
-            />
-            <div className="flex-1">
-              <div className="text-[13px] font-semibold">Remove Filler Words</div>
-              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
-                remove_fillers={String(options.removeFillers)}
-              </div>
-              <div className="text-[11px] text-gray-500 mt-0.5">
-                Strip "uh", "um", "you know".
-              </div>
-            </div>
-          </div>
-        </div>
-
         {/* Confidence Filter */}
         <div className="py-2.5">
           <div className="flex items-start gap-2.5">
@@ -272,64 +314,88 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
           )}
         </div>
 
-        {/* Find & Replace */}
+        {/* Text Rules */}
         <div className="py-2.5">
           <div className="flex items-start gap-2.5">
             <Toggle
-              checked={options.findReplace.length > 0}
-              onChange={(v) => {
-                if (v) addFindReplace();
-                else set("findReplace", []);
-              }}
+              checked={options.textRulesEnabled}
+              onChange={(v) => set("textRulesEnabled", v)}
               disabled={disabled}
             />
             <div className="flex-1">
-              <div className="text-[13px] font-semibold">Find & Replace</div>
+              <div className="text-[13px] font-semibold">Text Rules</div>
+              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
+                text_rules={options.textRulesEnabled ? `${activeCount} active` : "off"}
+              </div>
               <div className="text-[11px] text-gray-500 mt-0.5">
-                Custom text replacements.
+                Filler removal, PII redaction, text replacements.
               </div>
             </div>
           </div>
-          {options.findReplace.length > 0 && (
-            <div className="mt-2 pl-[46px] space-y-1.5">
-              {options.findReplace.map((rule, i) => (
-                <div key={i} className="flex items-center gap-1">
-                  <input
-                    type="text"
-                    className="flex-1 px-1.5 py-0.5 bg-surface-3 border border-border rounded text-[11px]
-                      text-gray-200 placeholder-gray-600 focus:border-mvp-blue focus:outline-none"
-                    placeholder="Find..."
-                    value={rule.find}
-                    onChange={(e) =>
-                      updateFindReplace(i, "find", e.target.value)
-                    }
-                  />
-                  <span className="text-gray-500 text-[11px]">&rarr;</span>
-                  <input
-                    type="text"
-                    className="flex-1 px-1.5 py-0.5 bg-surface-3 border border-border rounded text-[11px]
-                      text-gray-200 placeholder-gray-600 focus:border-mvp-blue focus:outline-none"
-                    placeholder="Replace..."
-                    value={rule.replace}
-                    onChange={(e) =>
-                      updateFindReplace(i, "replace", e.target.value)
-                    }
-                  />
+          {options.textRulesEnabled && (
+            <div className="mt-2 pl-[46px] space-y-2">
+              {/* Category pills */}
+              <div className="flex gap-1">
+                {categories.map((cat) => (
                   <button
-                    className="text-gray-500 hover:text-red-400 text-sm px-1"
-                    onClick={() => removeFindReplace(i)}
+                    key={cat.key}
+                    className={`px-2.5 py-1 text-[11px] rounded-full border transition-colors ${
+                      activeCategory === cat.key
+                        ? "bg-mvp-blue-dim border-mvp-blue text-mvp-blue-light"
+                        : "bg-surface-3 border-border text-gray-500 hover:text-gray-300"
+                    }`}
+                    onClick={() => set("textRuleCategory", cat.key)}
                   >
-                    &times;
+                    {cat.label}{cat.count > 0 ? ` (${cat.count})` : ""}
                   </button>
+                ))}
+              </div>
+
+              {/* Status message */}
+              {totalCount > 0 && (
+                <div className="text-[11px] text-gray-500">
+                  {statusLabel}
                 </div>
-              ))}
-              <button
-                className="w-full py-0.5 text-[11px] text-gray-500 border border-dashed border-border
-                  rounded hover:border-mvp-blue hover:text-mvp-blue-light"
-                onClick={addFindReplace}
-              >
-                + Add rule
-              </button>
+              )}
+
+              {/* Import / Export / Defaults */}
+              <div className="flex gap-1.5 flex-wrap">
+                <button
+                  className="px-2.5 py-1 text-[11px] bg-surface-3 border border-border rounded
+                    text-gray-400 hover:text-white hover:border-mvp-blue"
+                  onClick={handleImport}
+                >
+                  Import JSON
+                </button>
+                <button
+                  className="px-2.5 py-1 text-[11px] bg-surface-3 border border-border rounded
+                    text-gray-400 hover:text-white hover:border-mvp-blue"
+                  onClick={handleExport}
+                  disabled={totalCount === 0}
+                >
+                  Export JSON
+                </button>
+                <button
+                  className="px-2.5 py-1 text-[11px] bg-surface-3 border border-border rounded
+                    text-gray-400 hover:text-white hover:border-mvp-blue"
+                  onClick={handleReset}
+                >
+                  Defaults
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json"
+                  className="hidden"
+                  onChange={handleFileImport}
+                />
+              </div>
+
+              {totalCount === 0 && (
+                <div className="text-[11px] text-gray-600">
+                  No rules loaded. Import a JSON ruleset to get started.
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -382,17 +448,56 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
         )}
       </div>
 
-      {/* Audio Intelligence - future features */}
+      {/* Audio Intelligence */}
       <div>
         <div className="text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-3 pb-1.5 border-b border-border">
           Audio Intelligence
         </div>
+
+        {/* Entity Detection */}
+        <div className="py-2.5">
+          <div className="flex items-start gap-2.5">
+            <Toggle
+              checked={options.detectEntities}
+              onChange={(v) => set("detectEntities", v)}
+              disabled={disabled}
+            />
+            <div className="flex-1">
+              <div className="text-[13px] font-semibold">Entity Detection</div>
+              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
+                detect_entities={String(options.detectEntities)}
+              </div>
+              <div className="text-[11px] text-gray-500 mt-0.5">
+                Detect people, organizations, locations, dates.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Topic Detection */}
+        <div className="py-2.5">
+          <div className="flex items-start gap-2.5">
+            <Toggle
+              checked={options.detectTopics}
+              onChange={(v) => set("detectTopics", v)}
+              disabled={disabled}
+            />
+            <div className="flex-1">
+              <div className="text-[13px] font-semibold">Topic Detection</div>
+              <div className="text-[10px] font-mono text-mvp-blue-light mt-0.5">
+                detect_topics={String(options.detectTopics)}
+              </div>
+              <div className="text-[11px] text-gray-500 mt-0.5">
+                Extract most-discussed subjects.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Future features */}
         {[
-          { name: "Entity Detection", phase: "Phase 2" },
-          { name: "Sentiment", phase: "Phase 2" },
-          { name: "PII Redaction", phase: "Phase 2" },
+          { name: "Sentiment", phase: "Phase 3" },
           { name: "Summarization", phase: "Phase 3" },
-          { name: "Topic Detection", phase: "Phase 3" },
         ].map((feat) => (
           <div key={feat.name} className="py-2">
             <div className="flex items-start gap-2.5">

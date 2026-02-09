@@ -1,7 +1,30 @@
-import type { Segment, Paragraph, TranscriptionOptions } from "../types";
+import type { Segment, Paragraph, TextRule, TranscriptionOptions } from "../types";
 
-const FILLER_PATTERN = /\b(?:you know|i mean|sort of|kind of|like|um|uh)\b/gi;
-const MULTI_SPACE = / {2,}/g;
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function applyTextRules(text: string, rules: TextRule[]): string {
+  let result = text;
+  for (const rule of rules) {
+    if (!rule.enabled || !rule.find) continue;
+    try {
+      // Use per-rule flags, default to "gi" if not specified
+      const flags = rule.flags || "gi";
+      // Ensure "g" is always present so replace hits all occurrences
+      const safeFlags = flags.includes("g") ? flags : "g" + flags;
+      const pattern = rule.isRegex
+        ? new RegExp(rule.find, safeFlags)
+        : new RegExp("\\b" + escapeRegex(rule.find) + "\\b", safeFlags);
+      result = result.replace(pattern, rule.replace);
+    } catch {
+      // Skip rules with invalid regex
+    }
+  }
+  // Cleanup: collapse multi-spaces, fix orphaned commas
+  result = result.replace(/ {2,}/g, " ").replace(/,\s*,/g, ",").trim();
+  return result;
+}
 
 export function applyPostProcessing(
   rawSegments: Segment[],
@@ -28,41 +51,14 @@ export function applyPostProcessing(
     }));
   }
 
-  // 2. Find & replace
-  if (options.findReplace.length > 0) {
-    const rules = options.findReplace
-      .filter((r) => r.find.trim())
-      .map((r) => ({
-        pattern: new RegExp(
-          "\\b" + r.find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b",
-          "gi"
-        ),
-        replace: r.replace,
-      }));
-
-    if (rules.length > 0) {
-      const applyRules = (text: string) => {
-        let result = text;
-        for (const rule of rules) {
-          result = result.replace(rule.pattern, rule.replace);
-        }
-        return result;
-      };
-      segments = segments.map((s) => ({ ...s, text: applyRules(s.text) }));
-      paragraphs = paragraphs.map((p) => ({ ...p, text: applyRules(p.text) }));
-    }
-  }
-
-  // 3. Remove filler words
-  if (options.removeFillers) {
-    const cleanFillers = (text: string) =>
-      text
-        .replace(FILLER_PATTERN, "")
-        .replace(MULTI_SPACE, " ")
-        .replace(/,\s*,/g, ",")
-        .trim();
-    segments = segments.map((s) => ({ ...s, text: cleanFillers(s.text) }));
-    paragraphs = paragraphs.map((p) => ({ ...p, text: cleanFillers(p.text) }));
+  // 2. Apply text rules filtered by active category (only if enabled)
+  if (!options.textRulesEnabled) return { segments, paragraphs };
+  const activeRules = options.textRules.filter((r) =>
+    r.enabled && r.find && (options.textRuleCategory === "all" || r.category === options.textRuleCategory)
+  );
+  if (activeRules.length > 0) {
+    segments = segments.map((s) => ({ ...s, text: applyTextRules(s.text, activeRules) }));
+    paragraphs = paragraphs.map((p) => ({ ...p, text: applyTextRules(p.text, activeRules) }));
   }
 
   return { segments, paragraphs };

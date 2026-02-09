@@ -11,15 +11,17 @@ import torch
 
 from models import (
     WhisperSegment, TranscriptionResponse, ModelInfo, ModelList,
-    Paragraph, SpeakerStatistics, Statistics,
+    Paragraph, SpeakerStatistics, Statistics, Entity, Topic,
 )
 from audio import convert_audio_to_wav, split_audio_into_chunks
 from transcription import load_model, format_srt, format_vtt, transcribe_audio_chunk
 from diarization import Diarizer
 from post_processing import (
     detect_paragraphs, remove_filler_words, find_and_replace,
-    filter_by_confidence, compute_speaker_statistics, apply_speaker_labels,
+    apply_text_rules, filter_by_confidence, compute_speaker_statistics,
+    apply_speaker_labels,
 )
+from entity_detection import extract_entities, extract_topics
 from config import get_config
 from auth import AuthMiddleware
 
@@ -92,7 +94,11 @@ def create_app() -> FastAPI:
         remove_fillers: bool = Form(False),
         min_confidence: float = Form(0.0),
         find_replace: Optional[str] = Form(None),
+        text_rules: Optional[str] = Form(None),
         speaker_labels: Optional[str] = Form(None),
+        # --- Audio Intelligence ---
+        detect_entities: bool = Form(False),
+        detect_topics: bool = Form(False),
     ):
         global asr_model, diarizer_instance
 
@@ -158,18 +164,28 @@ def create_app() -> FastAPI:
             if min_confidence > 0.0:
                 all_segments = filter_by_confidence(all_segments, min_confidence)
 
-            # 2. Filler word removal
-            if remove_fillers:
-                all_segments = remove_filler_words(all_segments)
-
-            # 3. Find & replace (parse JSON string from form data)
-            if find_replace:
+            # 2. Text rules (unified) or legacy filler/find-replace fallback
+            if text_rules:
                 try:
-                    rules = json.loads(find_replace)
-                    if isinstance(rules, list):
-                        all_segments = find_and_replace(all_segments, rules)
+                    parsed_rules = json.loads(text_rules)
+                    # Accept bare array or envelope with rules array
+                    if isinstance(parsed_rules, dict) and "rules" in parsed_rules:
+                        parsed_rules = parsed_rules["rules"]
+                    if isinstance(parsed_rules, list):
+                        all_segments = apply_text_rules(all_segments, parsed_rules)
                 except json.JSONDecodeError:
-                    logger.warning("Invalid find_replace JSON, skipping")
+                    logger.warning("Invalid text_rules JSON, skipping")
+            else:
+                # Legacy fallback: separate filler removal and find/replace
+                if remove_fillers:
+                    all_segments = remove_filler_words(all_segments)
+                if find_replace:
+                    try:
+                        rules = json.loads(find_replace)
+                        if isinstance(rules, list):
+                            all_segments = find_and_replace(all_segments, rules)
+                    except json.JSONDecodeError:
+                        logger.warning("Invalid find_replace JSON, skipping")
 
             # 4. Custom speaker labels
             labels_map = None
@@ -234,6 +250,20 @@ def create_app() -> FastAPI:
                         total_speakers=raw_stats["total_speakers"],
                     )
 
+            # 7. Entity detection (spaCy NER)
+            entities_data = None
+            if detect_entities and all_segments:
+                raw_entities = extract_entities(all_segments)
+                if raw_entities:
+                    entities_data = [Entity(**e) for e in raw_entities]
+
+            # 8. Topic extraction (spaCy noun phrases)
+            topics_data = None
+            if detect_topics and all_segments:
+                raw_topics = extract_topics(all_segments)
+                if raw_topics:
+                    topics_data = [Topic(**t) for t in raw_topics]
+
             response = TranscriptionResponse(
                 text=full_text,
                 segments=all_segments if timestamps or response_format == "verbose_json" else None,
@@ -242,6 +272,8 @@ def create_app() -> FastAPI:
                 model="parakeet-tdt-0.6b-v2",
                 paragraphs=paragraphs_data,
                 statistics=statistics_data,
+                entities=entities_data,
+                topics=topics_data,
             )
 
             # Cleanup

@@ -1,14 +1,19 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import type {
   Segment,
   Paragraph,
   Statistics,
+  DetectedEntity,
+  DetectedTopic,
   AppState,
   TranscriptionResponse,
   TranscriptionOptions,
+  TextRule,
+  TextRuleCategory,
   ViewMode,
 } from "./types";
 import { DEFAULT_OPTIONS } from "./types";
+import { DEFAULT_TEXT_RULES } from "./utils/text-rule-presets";
 import { transcribe } from "./api";
 import { applyPostProcessing } from "./utils/post-processing";
 import Layout from "./components/Layout";
@@ -32,6 +37,8 @@ export default function App() {
   const [rawSegments, setRawSegments] = useState<Segment[]>([]);
   const [rawParagraphs, setRawParagraphs] = useState<Paragraph[]>([]);
   const [statistics, setStatistics] = useState<Statistics | null>(null);
+  const [entities, setEntities] = useState<DetectedEntity[]>([]);
+  const [topics, setTopics] = useState<DetectedTopic[]>([]);
   const [, setFullText] = useState("");
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState("");
@@ -41,6 +48,41 @@ export default function App() {
   const [options, setOptions] = useState<TranscriptionOptions>(DEFAULT_OPTIONS);
   const [viewMode, setViewMode] = useState<ViewMode>("para");
   const [leftTab, setLeftTab] = useState<LeftTab>("features");
+
+  // Restore text rules + category from localStorage on mount (or load defaults)
+  // Storage version: bump to invalidate stale data when defaults change
+  const STORAGE_KEY = "echo-studio-text-rules-v3";
+  const CATEGORY_KEY = "echo-studio-text-rule-category";
+  useEffect(() => {
+    // Clear stale keys from previous versions
+    localStorage.removeItem("echo-studio-text-rules");
+    localStorage.removeItem("echo-studio-text-rules-v2");
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const rules: TextRule[] = JSON.parse(saved);
+        if (Array.isArray(rules) && rules.length > 0) {
+          const cat = (localStorage.getItem(CATEGORY_KEY) ?? "all") as TextRuleCategory;
+          setOptions((prev) => ({ ...prev, textRules: rules, textRuleCategory: cat }));
+          return;
+        }
+      }
+    } catch {
+      // Fall through to defaults
+    }
+    // No saved rules — load built-in defaults
+    setOptions((prev) => ({ ...prev, textRules: DEFAULT_TEXT_RULES }));
+  }, []);
+
+  // Persist text rules + category to localStorage on change
+  useEffect(() => {
+    if (options.textRules.length > 0) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(options.textRules));
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+    localStorage.setItem(CATEGORY_KEY, options.textRuleCategory);
+  }, [options.textRules, options.textRuleCategory]);
 
   // Client-side post-processing: recomputes instantly when options change
   const { segments, paragraphs } = useMemo(
@@ -66,6 +108,8 @@ export default function App() {
     setRawSegments([]);
     setRawParagraphs([]);
     setStatistics(null);
+    setEntities([]);
+    setTopics([]);
     setFullText("");
     setSearchQuery("");
     setState("idle");
@@ -79,6 +123,8 @@ export default function App() {
     setRawSegments([]);
     setRawParagraphs([]);
     setStatistics(null);
+    setEntities([]);
+    setTopics([]);
     setFullText("");
     setSearchQuery("");
 
@@ -87,6 +133,8 @@ export default function App() {
       setRawSegments(result.segments ?? []);
       setRawParagraphs(result.paragraphs ?? []);
       setStatistics(result.statistics ?? null);
+      setEntities(result.entities ?? []);
+      setTopics(result.topics ?? []);
       setFullText(result.text);
       setDuration(result.duration ?? 0);
       setState("done");
@@ -106,6 +154,8 @@ export default function App() {
     setRawSegments([]);
     setRawParagraphs([]);
     setStatistics(null);
+    setEntities([]);
+    setTopics([]);
     setFullText("");
     setError("");
     setSearchQuery("");
@@ -262,6 +312,62 @@ export default function App() {
 
               {/* Speaker Stats */}
               {statistics && <SpeakerStats statistics={statistics} />}
+
+              {/* Entities & Topics */}
+              {(entities.length > 0 || topics.length > 0) && (
+                <div className="px-5 py-3 border-b border-border space-y-2">
+                  {entities.length > 0 && (
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">
+                        Entities ({entities.length})
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {entities.map((e, i) => (
+                          <span
+                            key={i}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] ${
+                              e.label === "PERSON"
+                                ? "bg-purple-500/10 text-purple-400"
+                                : e.label === "ORG"
+                                ? "bg-blue-500/10 text-blue-400"
+                                : e.label === "GPE" || e.label === "LOC"
+                                ? "bg-green-500/10 text-green-400"
+                                : e.label === "DATE" || e.label === "TIME"
+                                ? "bg-yellow-500/10 text-yellow-500"
+                                : e.label === "MONEY"
+                                ? "bg-emerald-500/10 text-emerald-400"
+                                : "bg-gray-500/10 text-gray-400"
+                            }`}
+                          >
+                            {e.text}
+                            {e.count > 1 && (
+                              <span className="text-[9px] opacity-60">x{e.count}</span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {topics.length > 0 && (
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">
+                        Topics ({topics.length})
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {topics.map((t, i) => (
+                          <span
+                            key={i}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] bg-mvp-blue-dim text-mvp-blue-light"
+                          >
+                            {t.text}
+                            <span className="text-[9px] opacity-60">x{t.count}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Search */}
               <SearchBar
