@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type {
   Segment,
   Paragraph,
@@ -11,7 +11,7 @@ import type {
   TextRuleCategory,
   ViewMode,
 } from "./types";
-import { DEFAULT_OPTIONS } from "./types";
+import { DEFAULT_OPTIONS, optionsToConfig, configToOptions } from "./types";
 import { DEFAULT_TEXT_RULES } from "./utils/text-rule-presets";
 import { transcribe, annotateEntities, annotateSentiment } from "./api";
 import { applyPostProcessing } from "./utils/post-processing";
@@ -81,6 +81,37 @@ export default function App() {
     }
     localStorage.setItem(CATEGORY_KEY, options.textRuleCategory);
   }, [options.textRules, options.textRuleCategory]);
+
+  // Config import/export
+  const configFileRef = useRef<HTMLInputElement>(null);
+
+  const handleExportConfig = useCallback(() => {
+    const config = optionsToConfig(options);
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "echo-studio-config.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [options]);
+
+  const handleImportConfig = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result as string);
+        const newOptions = configToOptions(parsed);
+        setOptions(newOptions);
+      } catch (err) {
+        console.error("Invalid config file:", err);
+      }
+    };
+    reader.readAsText(f);
+    e.target.value = "";
+  }, []);
 
   // Client-side post-processing: recomputes instantly when options change
   const { segments, paragraphs } = useMemo(
@@ -254,6 +285,30 @@ export default function App() {
           >
             Code Sample
           </button>
+        </div>
+
+        {/* Config import/export */}
+        <div className="flex items-center gap-1.5 ml-3">
+          <button
+            className="px-2.5 py-1 text-[11px] text-gray-500 hover:text-mvp-blue-light transition-colors"
+            onClick={() => configFileRef.current?.click()}
+          >
+            Import
+          </button>
+          <span className="text-gray-600 text-xs">|</span>
+          <button
+            className="px-2.5 py-1 text-[11px] text-gray-500 hover:text-mvp-blue-light transition-colors"
+            onClick={handleExportConfig}
+          >
+            Export
+          </button>
+          <input
+            ref={configFileRef}
+            type="file"
+            accept=".json"
+            className="hidden"
+            onChange={handleImportConfig}
+          />
         </div>
 
         {/* Run button */}

@@ -154,6 +154,78 @@ export const DEFAULT_OPTIONS: TranscriptionOptions = {
   visibleSentimentTypes: { positive: true, neutral: true, negative: true },
 };
 
+/** Full config schema for import/export. Serializable version of TranscriptionOptions. */
+export interface EchoStudioConfig {
+  version: 1;
+  name?: string;
+  // Transcription
+  diarize: boolean;
+  numSpeakers?: number;
+  minSpeakers?: number;
+  maxSpeakers?: number;
+  // Post-processing
+  detectParagraphs: boolean;
+  paragraphSilenceThreshold: number;
+  minConfidence: number;
+  // Smart Redaction & PII
+  textRulesEnabled: boolean;
+  textRules: TextRule[];
+  textRuleCategory: TextRuleCategory;
+  // Audio Intelligence
+  detectEntities: boolean;
+  detectTopics: boolean;
+  detectSentiment: boolean;
+  visibleEntityTypes: Record<string, boolean>;
+  visibleSentimentTypes: Record<string, boolean>;
+  // Speaker labels (optional — only present if user set them)
+  speakerLabels?: Record<string, string>;
+}
+
+export function optionsToConfig(options: TranscriptionOptions, name?: string): EchoStudioConfig {
+  return {
+    version: 1,
+    name: name ?? "Echo Studio Config",
+    diarize: options.diarize,
+    ...(options.numSpeakers != null && { numSpeakers: options.numSpeakers }),
+    ...(options.minSpeakers != null && { minSpeakers: options.minSpeakers }),
+    ...(options.maxSpeakers != null && { maxSpeakers: options.maxSpeakers }),
+    detectParagraphs: options.detectParagraphs,
+    paragraphSilenceThreshold: options.paragraphSilenceThreshold,
+    minConfidence: options.minConfidence,
+    textRulesEnabled: options.textRulesEnabled,
+    textRules: options.textRules,
+    textRuleCategory: options.textRuleCategory,
+    detectEntities: options.detectEntities,
+    detectTopics: options.detectTopics,
+    detectSentiment: options.detectSentiment,
+    visibleEntityTypes: options.visibleEntityTypes,
+    visibleSentimentTypes: options.visibleSentimentTypes,
+    ...(Object.keys(options.speakerLabels).length > 0 && { speakerLabels: options.speakerLabels }),
+  };
+}
+
+export function configToOptions(config: EchoStudioConfig): TranscriptionOptions {
+  return {
+    ...DEFAULT_OPTIONS,
+    diarize: config.diarize ?? DEFAULT_OPTIONS.diarize,
+    numSpeakers: config.numSpeakers,
+    minSpeakers: config.minSpeakers,
+    maxSpeakers: config.maxSpeakers,
+    detectParagraphs: config.detectParagraphs ?? DEFAULT_OPTIONS.detectParagraphs,
+    paragraphSilenceThreshold: config.paragraphSilenceThreshold ?? DEFAULT_OPTIONS.paragraphSilenceThreshold,
+    minConfidence: config.minConfidence ?? DEFAULT_OPTIONS.minConfidence,
+    textRulesEnabled: config.textRulesEnabled ?? DEFAULT_OPTIONS.textRulesEnabled,
+    textRules: config.textRules ?? [],
+    textRuleCategory: config.textRuleCategory ?? "all",
+    detectEntities: config.detectEntities ?? DEFAULT_OPTIONS.detectEntities,
+    detectTopics: config.detectTopics ?? DEFAULT_OPTIONS.detectTopics,
+    detectSentiment: config.detectSentiment ?? DEFAULT_OPTIONS.detectSentiment,
+    visibleEntityTypes: config.visibleEntityTypes ?? DEFAULT_OPTIONS.visibleEntityTypes,
+    visibleSentimentTypes: config.visibleSentimentTypes ?? DEFAULT_OPTIONS.visibleSentimentTypes,
+    speakerLabels: config.speakerLabels ?? {},
+  };
+}
+
 export interface HealthResponse {
   status: string;
   model_loaded: boolean;

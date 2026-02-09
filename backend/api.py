@@ -101,11 +101,37 @@ def create_app() -> FastAPI:
         detect_entities: bool = Form(False),
         detect_topics: bool = Form(False),
         detect_sentiment: bool = Form(False),
+        # --- Config JSON (overrides individual params when present) ---
+        config_json: Optional[str] = Form(None, alias="config"),
     ):
         global asr_model, diarizer_instance
 
         if not asr_model:
             raise HTTPException(status_code=503, detail="Model not loaded yet")
+
+        # If a config JSON is provided, override individual form params
+        if config_json:
+            try:
+                cfg = json.loads(config_json)
+                diarize = cfg.get("diarize", diarize)
+                num_speakers = cfg.get("numSpeakers", num_speakers)
+                min_speakers = cfg.get("minSpeakers", min_speakers)
+                max_speakers = cfg.get("maxSpeakers", max_speakers)
+                detect_paragraphs_flag = cfg.get("detectParagraphs", detect_paragraphs_flag)
+                paragraph_silence_threshold = cfg.get("paragraphSilenceThreshold", paragraph_silence_threshold)
+                min_confidence = cfg.get("minConfidence", min_confidence)
+                detect_entities = cfg.get("detectEntities", detect_entities)
+                detect_topics = cfg.get("detectTopics", detect_topics)
+                detect_sentiment = cfg.get("detectSentiment", detect_sentiment)
+                if cfg.get("speakerLabels"):
+                    speaker_labels = json.dumps(cfg["speakerLabels"])
+                # Extract text rules from config
+                if cfg.get("textRulesEnabled") and cfg.get("textRules"):
+                    text_rules = json.dumps(cfg["textRules"])
+                    logger.info(f"Config: loaded {len(cfg['textRules'])} text rules")
+                logger.info("Config JSON applied")
+            except json.JSONDecodeError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid config JSON: {e}")
 
         filename = file.filename or "audio"
         logger.info(f"Transcription: {filename}, format={response_format}, diarize={diarize}")
@@ -174,6 +200,7 @@ def create_app() -> FastAPI:
                     if isinstance(parsed_rules, dict) and "rules" in parsed_rules:
                         parsed_rules = parsed_rules["rules"]
                     if isinstance(parsed_rules, list):
+                        logger.info(f"Applying {len(parsed_rules)} text rules to {len(all_segments)} segments")
                         all_segments = apply_text_rules(all_segments, parsed_rules)
                 except json.JSONDecodeError:
                     logger.warning("Invalid text_rules JSON, skipping")

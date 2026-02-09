@@ -1,5 +1,4 @@
-import { useRef } from "react";
-import { type TranscriptionOptions, type TextRule, type TextRuleset, type TextRuleCategory, ENTITY_TYPE_CONFIG, SENTIMENT_TYPE_CONFIG } from "../types";
+import { type TranscriptionOptions, type TextRuleCategory, ENTITY_TYPE_CONFIG, SENTIMENT_TYPE_CONFIG } from "../types";
 
 interface Props {
   options: TranscriptionOptions;
@@ -83,62 +82,12 @@ function NumberInput({
   );
 }
 
-function parseRules(text: string): TextRule[] | null {
-  try {
-    const parsed = JSON.parse(text);
-    const rules: unknown[] = Array.isArray(parsed) ? parsed : parsed?.rules;
-    if (!Array.isArray(rules)) return null;
-    return rules.map((r: any) => ({
-      name: r.name ?? "",
-      find: r.find ?? "",
-      replace: r.replace ?? "",
-      isRegex: r.isRegex ?? false,
-      flags: r.flags ?? "gi",
-      category: r.category ?? "replace",
-      enabled: r.enabled ?? true,
-    }));
-  } catch {
-    return null;
-  }
-}
-
 export default function SettingsPanel({ options, onChange, disabled, detectedSpeakers = [] }: Props) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
   const set = <K extends keyof TranscriptionOptions>(
     key: K,
     value: TranscriptionOptions[K]
   ) => {
     onChange({ ...options, [key]: value });
-  };
-
-  const handleImport = () => fileInputRef.current?.click();
-
-  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const rules = parseRules(reader.result as string);
-      if (rules) set("textRules", rules);
-    };
-    reader.readAsText(file);
-    e.target.value = "";
-  };
-
-  const handleExport = () => {
-    const ruleset: TextRuleset = {
-      version: 1,
-      name: "Echo Studio Text Rules",
-      rules: options.textRules,
-    };
-    const blob = new Blob([JSON.stringify(ruleset, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "text-rules.json";
-    a.click();
-    URL.revokeObjectURL(url);
   };
 
   const totalCount = options.textRules.length;
@@ -266,31 +215,6 @@ export default function SettingsPanel({ options, onChange, disabled, detectedSpe
               disabled={disabled}
             />
             <div className="text-[12px] font-semibold flex-1">Smart Redaction & PII</div>
-            {options.textRulesEnabled && (
-              <div className="flex items-center gap-2">
-                <button
-                  className="text-[10px] text-gray-500 hover:text-mvp-blue-light transition-colors"
-                  onClick={handleImport}
-                >
-                  Import
-                </button>
-                <span className="text-gray-600">|</span>
-                <button
-                  className="text-[10px] text-gray-500 hover:text-mvp-blue-light transition-colors"
-                  onClick={handleExport}
-                  disabled={totalCount === 0}
-                >
-                  Export
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".json"
-                  className="hidden"
-                  onChange={handleFileImport}
-                />
-              </div>
-            )}
           </div>
           {options.textRulesEnabled && (
             <div className="mt-1.5 pl-[46px]">

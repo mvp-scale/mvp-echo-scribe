@@ -91,6 +91,8 @@ function paragraphsToJSON(paragraphs: Paragraph[]): string {
       speaker: p.speaker ?? undefined,
       text: p.text.trim(),
       segment_count: p.segment_count,
+      ...(p.entity_counts && { entity_counts: p.entity_counts }),
+      ...(p.sentiment && { sentiment: p.sentiment }),
     })),
     null,
     2

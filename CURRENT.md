@@ -16,20 +16,23 @@
 
 **v0.2.0 Progress**:
 - ✅ API key authentication (LAN bypass + Bearer token)
-- ✅ Paragraph grouping (speaker-aware, silence-based) — backend + frontend
+- ✅ Paragraph grouping (speaker-aware, silence-based) — **client-side reactive** (threshold slider works live)
 - ✅ Audio player with click-to-seek timestamps
 - ✅ Speaker timeline, stats, search UI
 - ✅ Post-processing: confidence filter — **client-side real-time**
-- ✅ **Unified Text Rules system** — JSON-based filler removal, PII redaction, text replacements with per-rule regex flags, import/export, category pills (All/Fillers/PII/Replace), toggle on/off
+- ✅ **Smart Redaction & PII** (renamed from Text Rules) — JSON-based filler removal, PII redaction, text replacements. Import/Export. Category pills with semantic colors (orange=Fillers, red=PII, cyan=Replace). **Purely client-side** — toggle on/off restores original text instantly.
+- ✅ **Redaction highlighting** — redacted markers like `[SSN]`, `[CREDIT CARD]` render in bright rose text
 - ✅ Export: SRT, VTT, TXT, JSON — **respects line-by-line vs paragraph view mode**
-- ✅ Speaker hints for diarization (min/max/exact count)
+- ✅ Speaker hints for diarization (min/max/exact count, compact inline layout)
 - ✅ Custom speaker labels — **dynamic detection, real-time rename, colors preserved**
 - ✅ Two-panel layout matching mockup (Features/Code Sample left, results right)
 - ✅ Code Sample panel with live curl/Python generation
 - ✅ Separated upload from Run (configure settings before transcribing)
-- ✅ **Entity Detection** — spaCy NER (PERSON, ORG, GPE, DATE, MONEY, etc.) with color-coded tag display
+- ✅ **Per-paragraph Entity Detection** — spaCy NER counts per paragraph (PERSON, ORG, GPE, DATE, etc.) with colored pills on paragraph headers. Toggleable per-type. **Post-process capable** — toggle on after transcription, no re-run needed.
 - ✅ **Topic Detection** — spaCy noun phrase extraction, most-discussed subjects
-- ✅ Audio Intelligence section: Entity Detection + Topic Detection live, Sentiment + Summarization Phase 3
+- ✅ **Per-paragraph Sentiment Analysis** — VADER sentiment (positive/neutral/negative) per paragraph. Colored pills on paragraph headers. Toggleable per-type. **Post-process capable**.
+- ✅ **Settings panel redesign** — removed developer params, unified pill style, consistent hover states, compact layout
+- ✅ Audio Intelligence section: Entity Detection, Topic Detection, Sentiment Analysis all live
 
 **v0.3.0 (Infrastructure + Multi-File Upload)**:
 - **Redis**: Enables multi-file concurrent upload (background job queue) - **very compelling**
@@ -38,14 +41,19 @@
 
 **Key Architectural Decisions**:
 1. **Unified Text Rules over separate features**: Filler removal, find/replace, and PII redaction are all the same operation (pattern match → replacement). Single JSON-based system with import/export replaces three separate mechanisms.
-2. **spaCy for entity/topic detection**: Lightweight (~12MB model), runs on CPU, no GPU needed. Gives PERSON/ORG/GPE/DATE/MONEY entity detection and noun-phrase topic extraction.
-3. **No Redis for PII patterns**: Text Rules JSON import/export eliminates need for Redis-backed pattern storage. Users manage rules via JSON files.
-4. **No `better-profanity` dependency**: Profanity filtering = community text rules preset. Users import a JSON with profanity patterns.
+2. **Client-side post-processing for all text rules**: Redaction/rules are applied in the browser, never sent to the backend. Raw transcript stays clean. Toggle on/off works instantly without re-transcribing.
+3. **Client-side paragraph detection**: Paragraphs re-detected from segments whenever the silence threshold slider moves. Backend paragraphs used as initial state, but client takes over for reactivity.
+4. **Per-paragraph entity/sentiment over top-level aggregation**: Entity counts and sentiment live on each paragraph, not as flat lists above the transcript. More contextual, more navigational.
+5. **Post-hoc annotation pattern**: Entity detection and sentiment can be toggled on after transcription via lightweight CPU-only endpoints (`/v1/audio/entities`, `/v1/audio/sentiment`). No re-transcription needed.
+6. **VADER for sentiment over transformer models**: Lightweight, no model download, works on conversational text. Runs on CPU in milliseconds.
+7. **spaCy for entity/topic detection**: Lightweight (~12MB model), runs on CPU, no GPU needed.
+8. **No `better-profanity` dependency**: Profanity filtering = community text rules preset.
 
 **Not Doing for MVP**:
 - Channel-per-speaker, inline editing, per-word confidence, HIPAA certification
 - LLM features (future paid tier)
-- Sentiment analysis (needs actual ML model, not worth it for MVP)
+
+**Future: sherpa-onnx migration** — Current stack uses NVIDIA NeMo container (heavy, requires HF token for pyannote). Sherpa-onnx has the same Parakeet TDT 0.6B model as ONNX + built-in diarization. Migration would eliminate NeMo container, HF token, torchaudio shim, and all ABI hacks. Planned for v0.3.0.
 
 ---
 
@@ -110,7 +118,7 @@ All features organized by implementation phase with detailed planning tables.
 |---------|-------------|-----------------|-----------|--------|-------|---------------|
 | **PII Redaction (Regex-Based)** | None (pure regex) + Redis for pattern storage | Privacy, content filtering | 🟢 | 📋 | **Built-in patterns**: SSN (`\d{3}-\d{2}-\d{4}`), credit card (`\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}`), email, phone (US). **User-uploadable patterns**: POST JSON to `/redaction/patterns` with `[{"name": "Medical_Record", "pattern": "MR-\\d+", "replacement": "[MRN]"}]`. Store in Redis key `redaction:patterns`. Pre-compile regexes. Apply all to segment text. | Upload audio with SSN "123-45-6789", phone, email. Verify masked. Upload custom pattern JSON. Test persistence. Verify pre-compiled patterns used. |
 | **Language Detection** | Check NeMo output OR `langdetect` (~10ms) | Informational tag | 🟢 | 📋 | **Only if free/trivial**. First check if Parakeet model outputs language field. If yes, pass through. If no, optionally run `langdetect.detect(text)` on full transcript. Skip if any complexity. | Check NeMo response structure. If language field exists, return it. Otherwise evaluate if worth adding langdetect. |
-| **Sentiment Analysis** | `transformers` + model (~250MB download) | Call quality scoring | 🟡 | 🔬 | **Discuss value first**. Per-segment POSITIVE/NEGATIVE scoring. Use case: call center QA, customer satisfaction. Trade-off: downloads model, uses GPU memory. May not be worth it for MVP POC. | Pending conversation on use cases. If approved: upload customer service call, verify sentiment useful. Check GPU memory impact. |
+| **Sentiment Analysis** | `vaderSentiment` (pure Python, no model download) | Call quality scoring | 🟢 | ✅ | Per-paragraph positive/neutral/negative via VADER. Colored pills on paragraph headers. Post-process capable. Toggleable per-type. | Upload conversational audio, verify sentiment labels match tone. Toggle on/off. |
 
 ---
 
@@ -456,8 +464,9 @@ class TranscriptionRequest(BaseModel):
 | **Speaker Statistics** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - Backend + `SpeakerStats.tsx` frontend display |
 | **Transcript Search** | HIGH | Low | P1 | v0.2.0 | ✅ Done - `SearchBar.tsx` with highlighting |
 | **Unified Text Rules** | HIGH | Medium | P1 | v0.2.0 | ✅ Done - Replaces filler removal, find/replace, profanity filter. JSON import/export, per-rule regex flags, category pills. |
-| **Entity Detection** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - spaCy NER (PERSON, ORG, GPE, DATE, MONEY). Color-coded tags in UI. |
+| **Entity Detection** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - Per-paragraph spaCy NER counts. Colored pills on headers. Toggle per-type. Post-hoc capable. |
 | **Topic Detection** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - spaCy noun phrase extraction. Frequency-based topic tags. |
+| **Sentiment Analysis** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done - VADER per-paragraph. Colored pills (positive/neutral/negative). Post-hoc capable. |
 | **Redis Infrastructure** | MEDIUM | Medium (4-5 hours) | P1 | v0.3.0 | Enables job queue + rate limiting + usage tracking |
 | **Background Job Queue** | HIGH | Medium (3-4 hours w/ Redis) | P1 | v0.3.0 | **Multi-file upload** - very compelling |
 | **Word-Level Timestamps** | MEDIUM | Medium (2-3 hours + verification) | P2 | v0.3.0 | Nice-to-have, depends on NeMo output structure |
@@ -465,7 +474,7 @@ class TranscriptionRequest(BaseModel):
 | **Confidence Filter** | LOW | Low (1 hour) | P2 | v0.3.0 | Niche use case (noisy audio) |
 | **Language Detection** | LOW | Low (30 min if easy) | P2 | v0.3.0 | Only if trivial to add |
 | **PII Redaction (Regex)** | MEDIUM | Low (2-3 hours) | P2 | v0.3.0 | Simple regex patterns + user-uploadable custom patterns stored in Redis |
-| **Sentiment Analysis** | LOW | Medium (3-4 hours + model) | P3 | Future | Discuss value first - may not need for MVP |
+| **Sentiment Analysis** | MEDIUM | Low | P1 | v0.2.0 | ✅ Done — VADER, per-paragraph, post-hoc capable |
 | **WebSocket Progress** | MEDIUM | Medium (3-4 hours w/ Redis) | P3 | v0.4.0 | UX polish for long jobs |
 | **Rate Limiting** | LOW | Low (1-2 hours w/ Redis) | P3 | v0.4.0 | Abuse prevention, low priority for POC |
 | **Usage Tracking** | LOW | Low (2-3 hours w/ Redis) | P3 | v0.4.0 | Analytics, nice-to-have |
@@ -657,27 +666,43 @@ Alternative: Whisper with diarization (whisperX) is slower and less accurate on 
 
 ---
 
-## Migration from Sherpa-ONNX (Previous Implementation)
+## Migration: NeMo → Sherpa-ONNX (Planned for v0.3.0)
 
-### What Changed
+### Current Stack (NeMo)
+| Aspect | Current |
+|--------|---------|
+| Model | Parakeet TDT 0.6B via NeMo PyTorch |
+| Runtime | NeMo Framework (PyTorch) in `nvcr.io/nvidia/nemo:25.04` (~20GB image) |
+| Diarization | Pyannote 3.1 (requires HF_TOKEN for gated model) |
+| Workarounds | `torchaudio_compat/` ABI shim, pip pinning, pyannote version patches |
 
-| Aspect | Sherpa-ONNX (v1) | NeMo Parakeet (v2) | Reason for Change |
-|--------|------------------|-------------------|-------------------|
-| Model | Whisper Tiny/Base ONNX | Parakeet TDT 0.6B PyTorch | Better accuracy, native punctuation |
-| Runtime | ONNX Runtime | NeMo Framework (PyTorch) | More flexible, GPU-optimized |
-| Diarization | Not implemented | Pyannote 3.1 on GPU | Core feature requirement |
-| Timestamps | Segment-level | Word-level + segment-level | Higher precision |
-| Punctuation | None | Native from model | No post-processing needed |
-| Container | Custom Python env | NVIDIA NeMo base image | Simplified GPU setup |
+### Target Stack (Sherpa-ONNX)
+| Aspect | Target |
+|--------|--------|
+| Model | Same Parakeet TDT 0.6B as ONNX (`sherpa-onnx-nemo-parakeet-tdt-0.6b-v2`) |
+| Runtime | ONNX Runtime (slim Python image, no NeMo, no PyTorch) |
+| Diarization | sherpa-onnx built-in (no HF token, no pyannote) |
+| INT8 available | `sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8` for faster inference |
 
-### Migration Path (If Reverting)
+### What Migration Eliminates
+- `nvcr.io/nvidia/nemo:25.04` base image (20GB → slim Python base)
+- `HF_TOKEN` requirement (no gated models)
+- `torchaudio_compat/` shim (no ABI issues with ONNX Runtime)
+- All pip pinning gymnastics in Dockerfile
+- Pyannote version patches
 
-Sherpa-ONNX is still viable for:
-- CPU-only environments (no CUDA)
-- Minimal VRAM setups (< 4GB)
-- Embedded/edge deployments
+### What Needs Verification
+- sherpa-onnx diarization quality vs pyannote (pyannote is strong)
+- Segment-level timestamp output format from ONNX model
+- GPU acceleration via ONNX Runtime CUDA EP performance
+- VAD (voice activity detection) — sherpa-onnx has built-in, could replace silence-based chunking
 
-Keep sherpa-onnx branch for CPU fallback option.
+### Files to Touch
+- `Dockerfile` — complete rewrite (slim base, sherpa-onnx install)
+- `transcription.py` — swap NeMo API for sherpa-onnx `OfflineRecognizer`
+- `diarization/` — swap pyannote for sherpa-onnx diarization
+- `requirements.txt` — remove NeMo/pyannote deps, add sherpa-onnx
+- `docker-compose.yml` — remove NeMo-specific env vars
 
 ---
 
@@ -898,7 +923,7 @@ See Response Schema section above.
 - ❌ Inline editing (users export and edit elsewhere)
 - ❌ Channel-per-speaker (niche)
 - ❌ LLM integration (future, not POC)
-- ❌ Sentiment analysis (needs actual ML model, not justified for MVP)
+- ~~❌ Sentiment analysis~~ → ✅ **Done** (VADER, lightweight, no ML model needed)
 
 **What We ARE Doing**:
 - ✅ Unified Text Rules (JSON-based filler removal, PII redaction, replacements with import/export)
@@ -918,7 +943,7 @@ See Response Schema section above.
 
 **Last Updated**: 2026-02-09
 **Contributors**: Corey (dev), Claude (implementation)
-**Version**: v0.1.0 (working baseline) → **v0.2.0 in progress** (iterating on UI polish) → v0.3.0 (Redis + multi-file)
+**Version**: v0.1.0 (working baseline) → **v0.2.0 near-complete** (entity/sentiment/settings done, polish remaining) → v0.3.0 (sherpa-onnx migration + Redis + multi-file)
 
 ---
 
@@ -939,7 +964,7 @@ See Response Schema section above.
 - ✅ `CodeSamplePanel.tsx` - Live curl/Python code generation from settings
 - ✅ Toolbar: Features/Code Sample tabs + green Run button
 - ✅ Upload separated from Run (configure before transcribing)
-- ✅ Audio Intelligence section with Phase 2/3 roadmap badges
+- ✅ Audio Intelligence section — Entity Detection, Topic Detection, Sentiment Analysis all live
 
 **Batch 3 Complete** — Client-side post-processing (real-time):
 - ✅ `post-processing.ts` - Find/replace, speaker labels, filler removal applied client-side instantly
@@ -991,12 +1016,75 @@ See Response Schema section above.
 - ✅ Color-coded entity tags (purple=people, blue=orgs, green=locations, yellow=dates) + topic tags
 - ✅ `redact_entities()` function ready for entity-type-based redaction (wired but not yet exposed in UI)
 
+**Batch 7 Complete** — Per-paragraph entity detection + sentiment analysis + settings redesign:
+
+**Per-Paragraph Entity Detection:**
+- ✅ `annotate_paragraphs_with_entities()` in `entity_detection.py` — runs spaCy NER per paragraph, stores `entity_counts` dict (merges GPE+LOC)
+- ✅ `entity_counts: Optional[Dict[str, int]]` added to `Paragraph` model
+- ✅ Wired into transcription pipeline (when `detect_entities=true`)
+- ✅ Removed old top-level `extract_entities()` — per-paragraph counts replace flat entity list
+- ✅ `POST /v1/audio/entities` — lightweight post-hoc endpoint, CPU-only, annotates paragraph texts
+- ✅ Frontend: colored entity pills on paragraph header row (labeled "Entities" section)
+- ✅ Frontend: toggle pills in settings per entity type (13 types with semantic colors)
+- ✅ Frontend: `showEntities` prop gates all entity pills when toggle is off
+- ✅ Post-hoc: toggle on after transcription triggers API call, merges counts into existing paragraphs
+
+**Per-Paragraph Sentiment Analysis:**
+- ✅ `backend/sentiment_analysis.py` — VADER-based, lazy-loaded, CPU-only
+- ✅ `SentimentResult` model + `sentiment` field on `Paragraph` model
+- ✅ `detect_sentiment` API form param wired into pipeline
+- ✅ `POST /v1/audio/sentiment` — lightweight post-hoc endpoint
+- ✅ Frontend: colored sentiment pill on paragraph header row (labeled "Sentiment" section, right-aligned)
+- ✅ Frontend: toggle pills in settings (Positive=green, Neutral=gray, Negative=red)
+- ✅ Post-hoc: toggle on after transcription triggers API call
+- ✅ `vaderSentiment` added to `requirements.txt`
+
+**Smart Redaction & PII (renamed from Text Rules):**
+- ✅ Renamed section label to "Smart Redaction & PII"
+- ✅ Import/Export moved to title row as subtle gray text links
+- ✅ Removed Defaults button and "N loaded" counter
+- ✅ Category pills got semantic colors (orange=Fillers, red=PII, cyan=Replace, blue=All)
+- ✅ Text rules no longer sent to backend — **purely client-side**. Toggle off restores original text instantly.
+- ✅ Redacted markers (`[SSN]`, `[CREDIT CARD]`, `[EMAIL]`, etc.) render in bright rose-400 text
+- ✅ Shared `renderText()` utility in `utils/highlight-text.tsx` handles both redaction highlighting and search highlighting
+
+**Client-Side Paragraph Detection:**
+- ✅ `detectParagraphsClient()` in `utils/post-processing.ts` — mirrors backend algorithm
+- ✅ Silence threshold slider is now reactive — paragraphs regroup live as slider moves
+- ✅ Entity counts and sentiment carry over from matching raw paragraphs
+
+**Settings Panel Redesign:**
+- ✅ Removed all `param=value` monospace developer lines from every toggle
+- ✅ Removed description text from obvious toggles (Diarization, Paragraphs, Confidence, Redaction)
+- ✅ Kept descriptions for Audio Intelligence features (Entity, Topic, Sentiment)
+- ✅ Unified pill style: `PILL_BASE` + `PILL_INACTIVE` shared constants across all sections
+- ✅ All interactive elements get `hover:border-mvp-blue` on hover
+- ✅ Diarization hints compacted: 3 rows → 1 inline row (`Min [__] Max [__] Exact [__]`)
+- ✅ Diarization hints hidden when ≤1 speaker detected
+- ✅ Number inputs: `type="text" inputMode="numeric"` — no browser spinner arrows
+- ✅ Speaker labels aligned under `pl-[46px]` like all other sub-sections
+- ✅ Speaker labels auto-enabled with always-on toggle when speakers detected
+
+**Files Modified:**
+- Backend: `entity_detection.py`, `sentiment_analysis.py` (new), `models.py`, `api.py`, `requirements.txt`
+- Frontend: `types.ts`, `api.ts`, `App.tsx`, `ParagraphView.tsx`, `SettingsPanel.tsx`, `SpeakerSegment.tsx`, `utils/post-processing.ts`, `utils/highlight-text.tsx` (new)
+
+### Architecture Decisions Made This Session
+- **Client-side redaction**: Text rules never sent to backend. Raw data stays clean. Toggle works reactively.
+- **Client-side paragraph detection**: Re-detection on threshold change means no server round-trip. Backend paragraphs are initial seed only.
+- **Post-hoc annotation pattern**: Lightweight CPU endpoints for entity/sentiment. Toggle on after transcription without re-running GPU pipeline.
+- **VADER over transformer sentiment**: Zero model download, millisecond inference, good enough for conversational text classification.
+- **Unified visual system**: All toggleable pills share `PILL_BASE`/`PILL_INACTIVE` constants. Consistent sizing, font, hover behavior across entity types, sentiment types, and redaction categories.
+- **sherpa-onnx migration planned**: Current NeMo stack works but is heavy. Same Parakeet TDT model available as ONNX with built-in diarization. Migration would eliminate NeMo container, HF token, torchaudio shim. Target: v0.3.0.
+
 ### Remaining for v0.2.0
 - 📋 Trim audio (ffmpeg `-ss`/`-t`)
 - 📋 Search prev/next navigation
 - 📋 Word-level timestamps (verify NeMo output structure)
+- 📋 Code Sample panel update (reflect new API params: detect_sentiment, etc.)
 
-### Next: v0.3.0 (Infrastructure)
+### Next: v0.3.0 (Infrastructure + Migration)
+- 📋 **sherpa-onnx migration** — Replace NeMo container with ONNX Runtime, drop HF token requirement
 - 📋 Redis infrastructure (job queue + rate limiting)
 - 📋 Multi-file concurrent upload (background jobs)
 - 📋 WebSocket progress updates
