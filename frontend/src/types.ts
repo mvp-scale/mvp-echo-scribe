@@ -184,7 +184,7 @@ export interface EchoStudioConfig {
 export function optionsToConfig(options: TranscriptionOptions, name?: string): EchoStudioConfig {
   return {
     version: 1,
-    name: name ?? "Echo Studio Config",
+    name: name ?? "Echo Scribe Config",
     diarize: options.diarize,
     ...(options.numSpeakers != null && { numSpeakers: options.numSpeakers }),
     ...(options.minSpeakers != null && { minSpeakers: options.minSpeakers }),

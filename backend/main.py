@@ -24,7 +24,7 @@ config = get_config()
 app = create_app()
 
 if __name__ == "__main__":
-    logger.info(f"Starting MVP-Echo Studio on {config.host}:{config.port}")
+    logger.info(f"Starting MVP-Echo Scribe on {config.host}:{config.port}")
     if torch and torch.cuda.is_available():
         logger.info(f"CUDA: {torch.cuda.get_device_name(0)}")
     elif torch:

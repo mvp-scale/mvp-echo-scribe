@@ -1,4 +1,4 @@
-"""Framework-agnostic domain models for MVP-Echo Studio.
+"""Framework-agnostic domain models for MVP-Echo Scribe.
 
 These replace direct dependency on WhisperSegment (Pydantic DTO) inside
 processing logic. WhisperSegment remains as the API response DTO, with

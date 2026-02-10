@@ -1,5 +1,5 @@
 """
-Lightweight API key auth middleware for MVP-Echo Studio.
+Lightweight API key auth middleware for MVP-Echo Scribe.
 LAN IPs bypass auth. External requests need Bearer token from api-keys.json.
 """
 
@@ -21,7 +21,12 @@ PRIVATE_NETWORKS = [
     ip_network("100.64.0.0/10"),   # Tailscale CGNAT range
 ]
 
+# Paths that never require auth (health, model list, static frontend assets)
 OPEN_PATHS = {"/health", "/v1/models"}
+
+# Only these path prefixes require API key auth for external requests.
+# Everything else (static files, SPA routes) is served without auth.
+AUTH_PREFIXES = ("/v1/audio/",)
 
 KEYS_FILE = "/data/api-keys.json"
 
@@ -46,8 +51,9 @@ def _load_keys() -> dict:
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Always allow health + models
-        if request.url.path in OPEN_PATHS:
+        # Only enforce auth on API endpoints that process data
+        path = request.url.path
+        if path in OPEN_PATHS or not any(path.startswith(p) for p in AUTH_PREFIXES):
             return await call_next(request)
 
         # Allow OPTIONS (CORS preflight)

@@ -70,14 +70,20 @@ def format_vtt(segments: List[WhisperSegment]) -> str:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="MVP-Echo Studio")
+    app = FastAPI(title="MVP-Echo Scribe")
 
     # Auth middleware (LAN bypass + Bearer token)
     app.add_middleware(AuthMiddleware)
 
+    allowed_origins = [
+        "https://scribe.mvp-scale.com",
+        "http://localhost:5173",       # Vite dev server
+        "http://localhost:20301",      # Local Docker
+        "http://127.0.0.1:20301",
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
