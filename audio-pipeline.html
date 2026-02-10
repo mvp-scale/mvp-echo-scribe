@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Audio Processing Pipeline Architecture</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e17;
+    --surface: #111827;
+    --surface-2: #1a2235;
+    --border: #2a3550;
+    --text: #e2e8f0;
+    --text-dim: #8896b3;
+    --accent-gpu: #f59e0b;
+    --accent-gpu-dim: rgba(245, 158, 11, 0.12);
+    --accent-cpu: #06b6d4;
+    --accent-cpu-dim: rgba(6, 182, 212, 0.12);
+    --accent-llm: #a78bfa;
+    --accent-llm-dim: rgba(167, 139, 250, 0.12);
+    --accent-green: #34d399;
+    --accent-green-dim: rgba(52, 211, 153, 0.12);
+    --accent-red: #f87171;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    padding: 2rem;
+  }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 0.25rem;
+    color: var(--text);
+  }
+
+  .subtitle {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    margin-bottom: 2rem;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+    flex-wrap: wrap;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-dim);
+  }
+
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
+  /* Pipeline sections */
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .phase {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+    position: relative;
+    transition: all 0.2s;
+  }
+
+  .phase:hover {
+    border-color: #3a4a6a;
+    background: var(--surface-2);
+  }
+
+  .phase-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+  }
+
+  .phase-label {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .phase-number {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    background: rgba(255,255,255,0.05);
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    letter-spacing: 0.05em;
+  }
+
+  .phase-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.95rem;
+    font-weight: 700;
+  }
+
+  .phase-task {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+    background: rgba(255,255,255,0.03);
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+  }
+
+  .phase-speed {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+
+  .speed-gpu {
+    background: var(--accent-gpu-dim);
+    color: var(--accent-gpu);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+  }
+
+  .speed-cpu {
+    background: var(--accent-cpu-dim);
+    color: var(--accent-cpu);
+    border: 1px solid rgba(6, 182, 212, 0.25);
+  }
+
+  .speed-llm {
+    background: var(--accent-llm-dim);
+    color: var(--accent-llm);
+    border: 1px solid rgba(167, 139, 250, 0.25);
+  }
+
+  .speed-fast {
+    background: var(--accent-green-dim);
+    color: var(--accent-green);
+    border: 1px solid rgba(52, 211, 153, 0.25);
+  }
+
+  .phase-body {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .component {
+    flex: 1;
+    min-width: 200px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.85rem 1rem;
+  }
+
+  .component-type {
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 0.35rem;
+  }
+
+  .type-model { color: var(--accent-gpu); }
+  .type-process { color: var(--accent-cpu); }
+  .type-output { color: var(--accent-green); }
+  .type-llm { color: var(--accent-llm); }
+
+  .component-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+
+  .component-detail {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  .component-options {
+    margin-top: 0.4rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+
+  .option-tag {
+    font-size: 0.6rem;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.05);
+    color: var(--text-dim);
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .option-tag.recommended {
+    background: var(--accent-green-dim);
+    color: var(--accent-green);
+    border-color: rgba(52, 211, 153, 0.2);
+  }
+
+  /* Arrow connectors */
+  .connector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.4rem 0;
+  }
+
+  .connector-arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  .connector-line {
+    width: 2px;
+    height: 16px;
+    background: var(--border);
+  }
+
+  .connector-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    background: var(--bg);
+    padding: 0.1rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+  }
+
+  .connector-head {
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid var(--border);
+  }
+
+  /* GPU boundary box */
+  .gpu-boundary {
+    border: 2px dashed rgba(245, 158, 11, 0.25);
+    border-radius: 12px;
+    padding: 0.75rem;
+    position: relative;
+    margin-bottom: 0.25rem;
+  }
+
+  .gpu-boundary-label {
+    position: absolute;
+    top: -0.6rem;
+    left: 1rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: var(--accent-gpu);
+    background: var(--bg);
+    padding: 0 0.4rem;
+    letter-spacing: 0.08em;
+  }
+
+  .cpu-boundary {
+    border: 2px dashed rgba(6, 182, 212, 0.25);
+    border-radius: 12px;
+    padding: 0.75rem;
+    position: relative;
+    margin-bottom: 0.25rem;
+  }
+
+  .cpu-boundary-label {
+    position: absolute;
+    top: -0.6rem;
+    left: 1rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: var(--accent-cpu);
+    background: var(--bg);
+    padding: 0 0.4rem;
+    letter-spacing: 0.08em;
+  }
+
+  .llm-boundary {
+    border: 2px dashed rgba(167, 139, 250, 0.25);
+    border-radius: 12px;
+    padding: 0.75rem;
+    position: relative;
+  }
+
+  .llm-boundary-label {
+    position: absolute;
+    top: -0.6rem;
+    left: 1rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: var(--accent-llm);
+    background: var(--bg);
+    padding: 0 0.4rem;
+    letter-spacing: 0.08em;
+  }
+
+  .phases-inside {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  /* Summary bar */
+  .summary {
+    margin-top: 2rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem 1.5rem;
+  }
+
+  .summary h3 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    font-weight: 700;
+    margin-bottom: 0.75rem;
+    color: var(--accent-green);
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+  }
+
+  .summary-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .summary-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .summary-value {
+    font-size: 0.95rem;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .note {
+    margin-top: 1.5rem;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    line-height: 1.6;
+    border-left: 2px solid var(--border);
+    padding-left: 1rem;
+  }
+
+  .note strong {
+    color: var(--text);
+  }
+
+  @media (max-width: 700px) {
+    body { padding: 1rem; }
+    .phase-header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+    .component { min-width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Audio Processing Pipeline Architecture</h1>
+<p class="subtitle">What runs where, in what order, and what each piece produces</p>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent-gpu)"></div> GPU (ONNX / CUDA / TensorRT)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent-cpu)"></div> CPU (algorithmic, no neural net)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent-llm)"></div> LLM (local GPU or API)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent-green)"></div> Output / data handoff</div>
+</div>
+
+<div class="pipeline">
+
+  <!-- INPUT -->
+  <div class="phase" style="border-color: rgba(52,211,153,0.3);">
+    <div class="phase-header">
+      <div class="phase-label">
+        <span class="phase-number">INPUT</span>
+        <span class="phase-name">Raw Audio File</span>
+      </div>
+    </div>
+    <div class="phase-body">
+      <div class="component">
+        <div class="component-type type-output">FORMAT</div>
+        <div class="component-name">WAV / MP3 / FLAC → 16kHz Mono PCM</div>
+        <div class="component-detail">All pipelines expect 16kHz mono. FFmpeg or SoX converts upfront. This is trivial and near-instant.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-arrow"><div class="connector-line"></div><div class="connector-head"></div></div></div>
+
+  <!-- GPU BOUNDARY -->
+  <div class="gpu-boundary">
+    <div class="gpu-boundary-label">⬡ GPU PROCESS — SINGLE PROCESS, MODELS LOADED INTO VRAM</div>
+
+    <div class="phases-inside">
+
+      <!-- PHASE 1: VAD -->
+      <div class="phase">
+        <div class="phase-header">
+          <div class="phase-label">
+            <span class="phase-number">PHASE 1</span>
+            <span class="phase-name">VAD — Voice Activity Detection</span>
+            <span class="phase-task">Task: find where speech exists</span>
+          </div>
+          <span class="phase-speed speed-gpu">~instant</span>
+        </div>
+        <div class="phase-body">
+          <div class="component">
+            <div class="component-type type-model">NEURAL MODEL</div>
+            <div class="component-name">Silero VAD or Energy-based VAD</div>
+            <div class="component-detail">Tiny model (~2MB). Slides a window across audio and classifies each frame as speech/non-speech. Produces timestamp pairs of speech regions.</div>
+            <div class="component-options">
+              <span class="option-tag recommended">Silero VAD</span>
+              <span class="option-tag">WebRTC VAD</span>
+              <span class="option-tag">MarbleNet (NeMo)</span>
+            </div>
+          </div>
+          <div class="component">
+            <div class="component-type type-output">OUTPUT</div>
+            <div class="component-name">Speech Segments</div>
+            <div class="component-detail">List of (start_time, end_time) pairs. Non-speech regions are discarded. This is what gets fed to ASR — you're not transcribing silence.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="connector"><div class="connector-arrow"><div class="connector-line"></div><div class="connector-label">speech segments</div><div class="connector-line"></div><div class="connector-head"></div></div></div>
+
+      <!-- PHASE 2: ASR -->
+      <div class="phase">
+        <div class="phase-header">
+          <div class="phase-label">
+            <span class="phase-number">PHASE 2</span>
+            <span class="phase-name">ASR — Automatic Speech Recognition</span>
+            <span class="phase-task">Task: audio → text + timestamps</span>
+          </div>
+          <span class="phase-speed speed-gpu">~1s per hour (GPU)</span>
+        </div>
+        <div class="phase-body">
+          <div class="component">
+            <div class="component-type type-model">NEURAL MODEL — THE BIG ONE</div>
+            <div class="component-name">Parakeet TDT 0.6B v3</div>
+            <div class="component-detail">FastConformer encoder + Token-and-Duration Transducer decoder. 600M params. Processes the entire audio in a single batched forward pass on GPU. This is where 95% of the "intelligence" happens.</div>
+            <div class="component-options">
+              <span class="option-tag recommended">Parakeet TDT 0.6B v3</span>
+              <span class="option-tag">Whisper large-v3-turbo</span>
+              <span class="option-tag">Canary Qwen 2.5B</span>
+              <span class="option-tag">SenseVoice</span>
+              <span class="option-tag">Paraformer</span>
+            </div>
+          </div>
+          <div class="component">
+            <div class="component-type type-output">OUTPUT</div>
+            <div class="component-name">Timestamped Transcript</div>
+            <div class="component-detail">Word-level text with start/end times, punctuation, capitalization. e.g. "We need to ship by Friday" → each word has a millisecond timestamp.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="connector"><div class="connector-arrow"><div class="connector-line"></div><div class="connector-label">timestamped words</div><div class="connector-line"></div><div class="connector-head"></div></div></div>
+
+      <!-- PHASE 3: SPEAKER SEGMENTATION -->
+      <div class="phase">
+        <div class="phase-header">
+          <div class="phase-label">
+            <span class="phase-number">PHASE 3a</span>
+            <span class="phase-name">Speaker Segmentation</span>
+            <span class="phase-task">Task: detect speaker changes</span>
+          </div>
+          <span class="phase-speed speed-gpu">GPU inference</span>
+        </div>
+        <div class="phase-body">
+          <div class="component">
+            <div class="component-type type-model">NEURAL MODEL</div>
+            <div class="component-name">PyAnnote Segmentation 3.0</div>
+            <div class="component-detail">Slides a window across audio and predicts frame-level speaker activity probabilities. Detects overlapping speech. Outputs a matrix of "which speakers are active at each frame."</div>
+            <div class="component-options">
+              <span class="option-tag recommended">PyAnnote 3.0</span>
+              <span class="option-tag">Reverb Diarization v1</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="connector"><div class="connector-arrow"><div class="connector-line"></div><div class="connector-head"></div></div></div>
+
+      <!-- PHASE 3b: EMBEDDINGS -->
+      <div class="phase">
+        <div class="phase-header">
+          <div class="phase-label">
+            <span class="phase-number">PHASE 3b</span>
+            <span class="phase-name">Speaker Embedding Extraction</span>
+            <span class="phase-task">Task: create voice fingerprints</span>
+          </div>
+          <span class="phase-speed speed-gpu">GPU batched inference</span>
+        </div>
+        <div class="phase-body">
+          <div class="component">
+            <div class="component-type type-model">NEURAL MODEL</div>
+            <div class="component-name">TitaNet / 3D-Speaker / NeMo Embeddings</div>
+            <div class="component-detail">For each speech segment, produces a 192-512 dimensional vector that captures voice characteristics. Same speaker → similar vectors. Different speaker → distant vectors. NeMo's MSDD batches these across multiple window scales on GPU.</div>
+            <div class="component-options">
+              <span class="option-tag recommended">TitaNet-Large (NeMo)</span>
+              <span class="option-tag">3D-Speaker</span>
+              <span class="option-tag">ECAPA-TDNN</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-arrow"><div class="connector-line"></div><div class="connector-label">embedding vectors</div><div class="connector-line"></div><div class="connector-head"></div></div></div>
+
+  <!-- CPU BOUNDARY -->
+  <div class="cpu-boundary">
+    <div class="cpu-boundary-label">⬡ CPU PROCESS — ALGORITHMIC (NO NEURAL NET)</div>
+
+    <div class="phases-inside">
+      <!-- PHASE 3c: CLUSTERING -->
+      <div class="phase">
+        <div class="phase-header">
+          <div class="phase-label">
+            <span class="phase-number">PHASE 3c</span>
+            <span class="phase-name">Clustering + Label Assignment</span>
+            <span class="phase-task">Task: group voices → Speaker_0, Speaker_1...</span>
+          </div>
+          <span class="phase-speed speed-cpu">CPU math</span>
+        </div>
+        <div class="phase-body">
+          <div class="component">
+            <div class="component-type type-process">ALGORITHM (not a model)</div>
+            <div class="component-name">Agglomerative / Spectral Clustering</div>
+            <div class="component-detail">Computes cosine similarity between all embedding vectors. Groups similar vectors into clusters. Each cluster = one speaker. Then assigns speaker labels back onto the word-level timestamps from Phase 2.</div>
+            <div class="component-options">
+              <span class="option-tag">Agglomerative (O(n²))</span>
+              <span class="option-tag recommended">Spectral (faster)</span>
+              <span class="option-tag recommended">NeMo MSDD (neural, GPU)</span>
+            </div>
+          </div>
+          <div class="component">
+            <div class="component-type type-output">OUTPUT — THE DIARIZED TRANSCRIPT</div>
+            <div class="component-name">Speaker-labeled, timestamped text</div>
+            <div class="component-detail" style="color: var(--accent-green);">
+              Speaker_0 [0:01-0:15]: "We need to ship by Friday."<br>
+              Speaker_1 [0:15-0:22]: "That's too aggressive."<br>
+              Speaker_0 [0:22-0:30]: "The client is expecting it."
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-arrow"><div class="connector-line"></div><div class="connector-label" style="border-color: rgba(167,139,250,0.3); color: var(--accent-llm);">diarized transcript (text)</div><div class="connector-line"></div><div class="connector-head"></div></div></div>
+
+  <!-- LLM BOUNDARY -->
+  <div class="llm-boundary">
+    <div class="llm-boundary-label">⬡ LLM — TEXT PROCESSING (SEPARATE FROM AUDIO PIPELINE)</div>
+
+    <div class="phases-inside">
+      <div class="phase">
+        <div class="phase-header">
+          <div class="phase-label">
+            <span class="phase-number">PHASE 4</span>
+            <span class="phase-name">Intelligence Layer</span>
+            <span class="phase-task">Task: understand what was said</span>
+          </div>
+          <span class="phase-speed speed-llm">LLM inference</span>
+        </div>
+        <div class="phase-body">
+          <div class="component">
+            <div class="component-type type-llm">LLM (any)</div>
+            <div class="component-name">GPT-4o / Claude / Llama / DeepSeek / etc.</div>
+            <div class="component-detail">The diarized transcript is now just text. Feed it to any LLM for higher-order analysis. This is a completely separate step — no audio involved.</div>
+          </div>
+          <div class="component">
+            <div class="component-type type-output">OUTPUTS</div>
+            <div class="component-name">Whatever you need</div>
+            <div class="component-detail">
+              • Summarization<br>
+              • Action items / decisions<br>
+              • Sentiment per speaker<br>
+              • Intent classification<br>
+              • Topic segmentation<br>
+              • Key moments / highlights<br>
+              • Follow-up email drafts
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- SUMMARY -->
+<div class="summary">
+  <h3>⏱ Time Budget for 1 Hour of Audio (NVIDIA GPU)</h3>
+  <div class="summary-grid">
+    <div class="summary-item">
+      <span class="summary-label">Phase 1: VAD</span>
+      <span class="summary-value" style="color: var(--accent-green);">< 0.5s</span>
+    </div>
+    <div class="summary-item">
+      <span class="summary-label">Phase 2: ASR (Parakeet TDT)</span>
+      <span class="summary-value" style="color: var(--accent-green);">~1-3s</span>
+    </div>
+    <div class="summary-item">
+      <span class="summary-label">Phase 3a-c: Diarization</span>
+      <span class="summary-value" style="color: var(--accent-gpu);">~10-20s</span>
+    </div>
+    <div class="summary-item">
+      <span class="summary-label">Total Audio Pipeline</span>
+      <span class="summary-value" style="color: var(--accent-green);">~15-25s per hour</span>
+    </div>
+    <div class="summary-item">
+      <span class="summary-label">Phase 4: LLM Analysis</span>
+      <span class="summary-value" style="color: var(--accent-llm);">varies (separate)</span>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Key insight:</strong> Phases 1, 2, 3a, and 3b are all <strong>neural model inference</strong> — they load .onnx or .nemo model files into GPU VRAM and run forward passes. They typically run in a <strong>single Python/C++ process</strong> that holds all models in VRAM simultaneously. Phase 3c (clustering) is pure CPU math. Phase 4 (LLM) is a completely separate process or API call — the audio pipeline's output is just text at that point.
+  <br><br>
+  <strong>What "ASR" means:</strong> ASR is just the name for Phase 2 — the specific task of converting audio to text. It is not a runtime, container, or framework. NeMo, ONNX Runtime, sherpa-onnx — those are runtimes/frameworks that <em>execute</em> ASR models.
+  <br><br>
+  <strong>Where the bottleneck is:</strong> The ASR itself (Phase 2) is the fastest part thanks to Parakeet TDT. The diarization (Phase 3) is where most of the time goes. NeMo's MSDD replaces the CPU clustering step with a GPU neural model, which is why NeMo's full pipeline is faster than PyAnnote-based approaches.
+</div>
+
+</div>
+</body>
+</html>

@@ -2,6 +2,28 @@ import type { TranscriptionResponse, TranscriptionOptions, HealthResponse, Senti
 
 const BASE = import.meta.env.DEV ? "" : "";
 
+const API_KEY_STORAGE_KEY = "echo-studio-api-key";
+
+export function getStoredApiKey(): string {
+  return localStorage.getItem(API_KEY_STORAGE_KEY) || "";
+}
+
+export function setStoredApiKey(key: string): void {
+  if (key) {
+    localStorage.setItem(API_KEY_STORAGE_KEY, key);
+  } else {
+    localStorage.removeItem(API_KEY_STORAGE_KEY);
+  }
+}
+
+function authHeaders(): HeadersInit {
+  const key = getStoredApiKey();
+  if (key) {
+    return { Authorization: `Bearer ${key}` };
+  }
+  return {};
+}
+
 export async function transcribe(
   file: File,
   options: TranscriptionOptions
@@ -50,6 +72,7 @@ export async function transcribe(
 
   const res = await fetch(`${BASE}/v1/audio/transcriptions`, {
     method: "POST",
+    headers: authHeaders(),
     body: form,
   });
 
@@ -66,7 +89,7 @@ export async function annotateEntities(
 ): Promise<(Record<string, number> | null)[]> {
   const res = await fetch(`${BASE}/v1/audio/entities`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(paragraphTexts),
   });
 
@@ -83,7 +106,7 @@ export async function annotateSentiment(
 ): Promise<(SentimentResult | null)[]> {
   const res = await fetch(`${BASE}/v1/audio/sentiment`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(paragraphTexts),
   });
 

@@ -1,10 +1,10 @@
 # MVP-Echo Studio: Batch transcription + speaker diarization
 #
 # Runs alongside the toolbar stack (mvp-stt-docker) on port 20301.
-# Uses Parakeet TDT 0.6B (NeMo) + Pyannote speaker-diarization-3.1.
 #
-# Usage:
-#   docker compose up -d --build
+# Engine selection:
+#   NeMo (default):  docker compose up -d --build
+#   Sherpa-ONNX:     DOCKERFILE=Dockerfile.sherpa ENGINE=sherpa docker compose up -d --build
 #
 # Test:
 #   curl http://localhost:20301/health
@@ -13,7 +13,7 @@ services:
   mvp-scribe:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: ${DOCKERFILE:-Dockerfile}
     container_name: mvp-scribe
     ports:
       - "20301:8001"
@@ -24,7 +24,8 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - HF_TOKEN=${HF_TOKEN:-}
-      - MODEL_ID=nvidia/parakeet-tdt-0.6b-v2
+      - ENGINE=${ENGINE:-nemo}
+      - MODEL_ID=${MODEL_ID:-}
       - PORT=8001
       - CHUNK_DURATION=500
       - ENABLE_DIARIZATION=true

@@ -1,0 +1,91 @@
+#!/bin/bash
+# MVP-Echo Studio entrypoint (Sherpa-ONNX stack)
+#
+# Downloads models from GitHub releases (public, no auth) and starts FastAPI app.
+# Models are cached in /models/sherpa-onnx (persistent Docker volume).
+# Skips downloads if files already exist from a previous run.
+
+set -e
+
+MODEL_DIR="${MODEL_ID:-/models/sherpa-onnx}"
+
+echo "[echo-studio] Starting MVP-Echo Studio (Sherpa-ONNX Python API with batch GPU processing)..."
+
+# ── GPU check ──
+if command -v nvidia-smi &>/dev/null; then
+    echo "[echo-studio] GPU detected:"
+    nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader
+else
+    echo "[echo-studio] WARNING: nvidia-smi not found"
+fi
+
+# ── Download models from GitHub releases (no auth required) ──
+echo "[echo-studio] Model directory: ${MODEL_DIR}"
+mkdir -p "${MODEL_DIR}"
+
+# --- ASR: Parakeet TDT 0.6B v2 (int8) ---
+# Source: https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models
+# Files: encoder.int8.onnx (622MB), decoder.int8.onnx (6.9MB), joiner.int8.onnx (1.7MB), tokens.txt
+ASR_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2"
+
+if [ -f "${MODEL_DIR}/encoder.int8.onnx" ] && [ -f "${MODEL_DIR}/tokens.txt" ]; then
+    echo "[echo-studio] ASR model already present, skipping download"
+else
+    echo "[echo-studio] Downloading ASR model (Parakeet TDT 0.6B v2 int8, ~460MB)..."
+    curl -fSL "${ASR_URL}" | tar xjf - -C "${MODEL_DIR}" --strip-components=1
+    echo "[echo-studio] ASR model downloaded"
+fi
+
+# --- Segmentation: Pyannote 3.0 ---
+# Source: https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-segmentation-models
+# File: model.onnx (renamed to segmentation-3.0.onnx)
+SEG_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+
+if [ -f "${MODEL_DIR}/segmentation-3.0.onnx" ]; then
+    echo "[echo-studio] Segmentation model already present, skipping download"
+else
+    echo "[echo-studio] Downloading segmentation model (Pyannote 3.0, ~6.6MB)..."
+    curl -fSL "${SEG_URL}" | tar xjf - -C /tmp/
+    mv /tmp/sherpa-onnx-pyannote-segmentation-3-0/model.onnx "${MODEL_DIR}/segmentation-3.0.onnx"
+    rm -rf /tmp/sherpa-onnx-pyannote-segmentation-3-0
+    echo "[echo-studio] Segmentation model downloaded"
+fi
+
+# --- Embedding: 3D-Speaker CAM++ (zh+en) ---
+# Source: https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models
+# Note: "recongition" typo in the release tag is permanent/intentional
+# Note: filename uses HYPHEN in "16k-common" — code must match exactly
+EMB_FILENAME="3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+EMB_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/${EMB_FILENAME}"
+
+if [ -f "${MODEL_DIR}/${EMB_FILENAME}" ]; then
+    echo "[echo-studio] Embedding model already present, skipping download"
+else
+    echo "[echo-studio] Downloading embedding model (3D-Speaker CAM++, ~27MB)..."
+    curl -fSL -o "${MODEL_DIR}/${EMB_FILENAME}" "${EMB_URL}"
+    echo "[echo-studio] Embedding model downloaded"
+fi
+
+# ── Verify all models ──
+echo "[echo-studio] Verifying models..."
+MISSING=0
+for f in encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt segmentation-3.0.onnx "${EMB_FILENAME}"; do
+    if [ -f "${MODEL_DIR}/${f}" ]; then
+        SIZE=$(stat -c%s "${MODEL_DIR}/${f}" 2>/dev/null || echo "?")
+        echo "[echo-studio]   OK: ${f} (${SIZE} bytes)"
+    else
+        echo "[echo-studio]   MISSING: ${f}"
+        MISSING=1
+    fi
+done
+
+if [ "$MISSING" -eq 1 ]; then
+    echo "[echo-studio] ERROR: Some models are missing. Cannot start."
+    exit 1
+fi
+
+echo "[echo-studio] All models verified"
+
+# ── Start FastAPI app ──
+echo "[echo-studio] Starting uvicorn on port ${PORT:-8001}..."
+exec python3 -m uvicorn main:app --host 0.0.0.0 --port "${PORT:-8001}" --workers 1

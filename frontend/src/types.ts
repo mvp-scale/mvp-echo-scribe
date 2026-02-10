@@ -228,8 +228,10 @@ export function configToOptions(config: EchoStudioConfig): TranscriptionOptions 
 
 export interface HealthResponse {
   status: string;
+  engine: string;
   model_loaded: boolean;
   model_id: string;
+  model_name?: string;
   cuda_available: boolean;
   gpu_name?: string;
   gpu_memory?: {

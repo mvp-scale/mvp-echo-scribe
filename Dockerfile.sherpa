@@ -1,0 +1,78 @@
+# MVP-Echo Studio: Sherpa-ONNX Python API with GPU batch processing
+#
+# Multi-stage build:
+#   Stage 1: Build frontend (Node 20)
+#   Stage 2: CUDA runtime + Sherpa-ONNX Python API + GPU libraries
+#
+# 4-step pipeline: Diarization → Extract clips → Batch GPU ASR → Merge
+# Massively parallel on GPU using decode_streams(). No PyTorch needed (pure ONNX Runtime).
+#
+# Image size: ~4-5GB (vs NeMo's ~20GB)
+# VRAM usage: <4GB total (vs NeMo's ~6GB)
+# Performance: 18min in ~5-7s, 3-hour file in <3 minutes
+
+# ── Stage 1: Frontend build ──
+FROM node:20-slim AS frontend-build
+
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# ── Stage 2: CUDA runtime + Sherpa-ONNX (GPU binaries only) ──
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Model directory (populated by entrypoint-sherpa.sh from GitHub releases)
+ENV MODEL_DIR=/models/sherpa-onnx
+
+# System dependencies (libgomp1 required by sherpa-onnx C++ binaries)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    ffmpeg \
+    libsndfile1 \
+    curl \
+    bzip2 \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python dependencies: sherpa-onnx GPU + web stack ──
+# Install sherpa-onnx with CUDA 12 + cuDNN 9 support (matches base image)
+# GPU wheel includes ONNX Runtime CUDA provider — no separate C++ binary needed
+# Wheel index: https://k2-fsa.github.io/sherpa/onnx/cuda.html
+RUN pip3 install --no-cache-dir \
+    sherpa-onnx==1.12.23+cuda12.cudnn9 -f https://k2-fsa.github.io/sherpa/onnx/cuda.html \
+    && pip3 install --no-cache-dir \
+    soundfile \
+    numpy
+
+# Install web stack dependencies
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir \
+    -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
+
+# spaCy English model for entity detection (CPU-only feature)
+RUN python3 -m spacy download en_core_web_sm
+
+# Copy backend code
+WORKDIR /app
+COPY backend/ /app/
+
+# Copy built frontend
+COPY --from=frontend-build /build/dist /app/static
+
+# Copy entrypoint
+COPY entrypoint-sherpa.sh /app/entrypoint-sherpa.sh
+RUN chmod +x /app/entrypoint-sherpa.sh
+
+ENV PORT=8001
+ENV ENGINE=sherpa
+ENV MODEL_ID=/models/sherpa-onnx
+EXPOSE 8001
+
+ENTRYPOINT ["/app/entrypoint-sherpa.sh"]

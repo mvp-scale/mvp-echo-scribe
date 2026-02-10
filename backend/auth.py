@@ -18,6 +18,7 @@ PRIVATE_NETWORKS = [
     ip_network("10.0.0.0/8"),
     ip_network("172.16.0.0/12"),
     ip_network("192.168.0.0/16"),
+    ip_network("100.64.0.0/10"),   # Tailscale CGNAT range
 ]
 
 OPEN_PATHS = {"/health", "/v1/models"}
@@ -53,8 +54,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        # LAN bypass
-        client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        # LAN bypass — check CF-Connecting-IP (Cloudflare tunnel), then x-forwarded-for
+        client_ip = request.headers.get("cf-connecting-ip", "").strip()
+        if not client_ip:
+            client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
         if not client_ip:
             client_ip = request.client.host if request.client else ""
 

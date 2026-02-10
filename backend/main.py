@@ -1,7 +1,11 @@
 import os
 import logging
 import uvicorn
-import torch
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,9 +25,11 @@ app = create_app()
 
 if __name__ == "__main__":
     logger.info(f"Starting MVP-Echo Studio on {config.host}:{config.port}")
-    if torch.cuda.is_available():
+    if torch and torch.cuda.is_available():
         logger.info(f"CUDA: {torch.cuda.get_device_name(0)}")
-    else:
+    elif torch:
         logger.warning("CUDA not available")
+    else:
+        logger.info("PyTorch not installed (using ONNX Runtime for GPU)")
 
     uvicorn.run(app, host=config.host, port=config.port)

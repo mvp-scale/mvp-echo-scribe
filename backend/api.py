@@ -7,30 +7,66 @@ from pathlib import Path
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, FileResponse
-import torch
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 from models import (
     WhisperSegment, TranscriptionResponse, ModelInfo, ModelList,
     Paragraph, SpeakerStatistics, Statistics, Topic,
 )
-from audio import convert_audio_to_wav, split_audio_into_chunks
-from transcription import load_model, format_srt, format_vtt, transcribe_audio_chunk
-from diarization import Diarizer
-from post_processing import (
-    detect_paragraphs, remove_filler_words, find_and_replace,
-    apply_text_rules, filter_by_confidence, compute_speaker_statistics,
-    apply_speaker_labels,
-)
+from config import get_config, create_ml_adapters, create_audio_adapter, create_infra_adapters
+from auth import AuthMiddleware
+from use_cases.transcribe import TranscribeAudioUseCase, TranscribeRequest
 from entity_detection import extract_topics, annotate_paragraphs_with_entities
 from sentiment_analysis import annotate_paragraphs_with_sentiment
-from config import get_config
-from auth import AuthMiddleware
 
 logger = logging.getLogger(__name__)
 
-asr_model = None
-diarizer_instance = None
 config = get_config()
+
+# Adapter instances (set during startup)
+_transcription = None
+_diarization = None
+_audio = None
+_infra = None
+_use_case = None
+
+
+def _format_timestamp(seconds: float, always_include_hours: bool = False,
+                      decimal_marker: str = ".") -> str:
+    hours = int(seconds / 3600)
+    seconds = seconds % 3600
+    minutes = int(seconds / 60)
+    seconds = seconds % 60
+
+    hours_marker = f"{hours:02d}:" if always_include_hours or hours > 0 else ""
+    return f"{hours_marker}{minutes:02d}:{seconds:06.3f}".replace(".", decimal_marker) \
+        if decimal_marker == "," else f"{hours_marker}{minutes:02d}:{seconds:06.3f}"
+
+
+def format_srt(segments: List[WhisperSegment]) -> str:
+    srt = ""
+    for i, seg in enumerate(segments):
+        start = _format_timestamp(seg.start, always_include_hours=True, decimal_marker=",")
+        end = _format_timestamp(seg.end, always_include_hours=True, decimal_marker=",")
+        text = seg.text.strip().replace("-->", "->")
+        speaker = f"[{seg.speaker}] " if seg.speaker else ""
+        srt += f"{i + 1}\n{start} --> {end}\n{speaker}{text}\n\n"
+    return srt.strip()
+
+
+def format_vtt(segments: List[WhisperSegment]) -> str:
+    vtt = "WEBVTT\n\n"
+    for seg in segments:
+        start = _format_timestamp(seg.start, always_include_hours=True)
+        end = _format_timestamp(seg.end, always_include_hours=True)
+        text = seg.text.strip()
+        speaker = f"<v {seg.speaker}>" if seg.speaker else ""
+        vtt += f"{start} --> {end}\n{speaker}{text}\n\n"
+    return vtt.strip()
 
 
 def create_app() -> FastAPI:
@@ -49,25 +85,45 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def startup_event():
-        global asr_model, diarizer_instance
+        global _transcription, _diarization, _audio, _infra, _use_case
 
         try:
-            if torch.cuda.is_available():
+            if torch and torch.cuda.is_available():
                 logger.info(f"CUDA available: {torch.cuda.get_device_name(0)}")
-            else:
+            elif torch:
                 logger.warning("CUDA not available, using CPU")
-
-            asr_model = load_model(config.model_id)
-            logger.info(f"Model {config.model_id} loaded")
-
-            # Initialize diarizer once at startup (pipeline load is slow)
-            hf_token = config.get_hf_token()
-            if hf_token:
-                logger.info("Initializing diarization pipeline...")
-                diarizer_instance = Diarizer(access_token=hf_token)
-                logger.info("Diarization pipeline ready")
             else:
-                logger.info("No HF token, diarization disabled")
+                logger.info("PyTorch not installed (using ONNX Runtime)")
+
+            # Create adapters via factory
+            _transcription, _diarization = create_ml_adapters(config)
+            _audio = create_audio_adapter()
+            _infra = create_infra_adapters(config)
+
+            # Load ML models
+            _transcription.load(config.model_id)
+            logger.info(f"Transcription model loaded: {_transcription.model_name()}")
+
+            if _diarization:
+                hf_token = config.get_hf_token()
+                if hf_token:
+                    logger.info("Initializing diarization pipeline...")
+                    _diarization.load(access_token=hf_token)
+                    logger.info("Diarization pipeline ready")
+                else:
+                    logger.info("No HF token, diarization disabled")
+            else:
+                logger.info("Diarization built into transcription adapter (Sherpa)")
+
+            # Wire up use case
+            _use_case = TranscribeAudioUseCase(
+                transcription=_transcription,
+                diarization=_diarization,
+                audio=_audio,
+                progress=_infra["progress"],
+            )
+
+            logger.info(f"Engine: {config.engine} | Infra: {config.infra}")
 
         except Exception as e:
             logger.error(f"Startup error: {e}")
@@ -104,9 +160,7 @@ def create_app() -> FastAPI:
         # --- Config JSON (overrides individual params when present) ---
         config_json: Optional[str] = Form(None, alias="config"),
     ):
-        global asr_model, diarizer_instance
-
-        if not asr_model:
+        if not _use_case or not _transcription or not _transcription.is_loaded():
             raise HTTPException(status_code=503, detail="Model not loaded yet")
 
         # If a config JSON is provided, override individual form params
@@ -125,7 +179,6 @@ def create_app() -> FastAPI:
                 detect_sentiment = cfg.get("detectSentiment", detect_sentiment)
                 if cfg.get("speakerLabels"):
                     speaker_labels = json.dumps(cfg["speakerLabels"])
-                # Extract text rules from config
                 if cfg.get("textRulesEnabled") and cfg.get("textRules"):
                     text_rules = json.dumps(cfg["textRules"])
                     logger.info(f"Config: loaded {len(cfg['textRules'])} text rules")
@@ -134,183 +187,48 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail=f"Invalid config JSON: {e}")
 
         filename = file.filename or "audio"
-        logger.info(f"Transcription: {filename}, format={response_format}, diarize={diarize}")
+        logger.info(f"Transcription: {filename}, format={response_format}, diarize={diarize}, engine={config.engine}")
 
         try:
+            # Save uploaded file
             temp_dir = Path(config.temp_dir)
             temp_dir.mkdir(parents=True, exist_ok=True)
-
             suffix = Path(filename).suffix or ".wav"
             temp_file = temp_dir / f"upload_{os.urandom(8).hex()}{suffix}"
             with open(temp_file, "wb") as f:
                 content = await file.read()
                 f.write(content)
 
-            wav_file = convert_audio_to_wav(str(temp_file))
-            audio_chunks = split_audio_into_chunks(wav_file, chunk_duration=config.chunk_duration)
-
-            # Diarization (uses pre-loaded pipeline, now with speaker hints)
-            diarization_result = None
-            if diarize and diarizer_instance and diarizer_instance.pipeline:
-                logger.info("Running speaker diarization")
-                diarization_result = diarizer_instance.diarize(
-                    wav_file,
-                    num_speakers=num_speakers,
-                    min_speakers=min_speakers,
-                    max_speakers=max_speakers,
-                )
-                logger.info(f"Found {diarization_result.num_speakers} speakers")
-
-            # Transcribe chunks
-            all_text = []
-            all_segments = []
-
-            for i, chunk_path in enumerate(audio_chunks):
-                logger.info(f"Processing chunk {i + 1}/{len(audio_chunks)}")
-                chunk_text, chunk_segments = transcribe_audio_chunk(
-                    asr_model, chunk_path, language=language, word_timestamps=word_timestamps
-                )
-
-                if i > 0:
-                    offset = i * config.chunk_duration
-                    for seg in chunk_segments:
-                        seg.start += offset
-                        seg.end += offset
-
-                all_text.append(chunk_text)
-                all_segments.extend(chunk_segments)
-
-            full_text = " ".join(all_text)
-
-            # Merge diarization
-            if diarizer_instance and diarization_result and diarization_result.segments:
-                all_segments = diarizer_instance.merge_with_transcription(diarization_result, all_segments)
-
-            # --- Post-processing pipeline ---
-
-            # 1. Confidence filtering (before text transforms)
-            if min_confidence > 0.0:
-                all_segments = filter_by_confidence(all_segments, min_confidence)
-
-            # 2. Text rules (unified) or legacy filler/find-replace fallback
-            if text_rules:
-                try:
-                    parsed_rules = json.loads(text_rules)
-                    # Accept bare array or envelope with rules array
-                    if isinstance(parsed_rules, dict) and "rules" in parsed_rules:
-                        parsed_rules = parsed_rules["rules"]
-                    if isinstance(parsed_rules, list):
-                        logger.info(f"Applying {len(parsed_rules)} text rules to {len(all_segments)} segments")
-                        all_segments = apply_text_rules(all_segments, parsed_rules)
-                except json.JSONDecodeError:
-                    logger.warning("Invalid text_rules JSON, skipping")
-            else:
-                # Legacy fallback: separate filler removal and find/replace
-                if remove_fillers:
-                    all_segments = remove_filler_words(all_segments)
-                if find_replace:
-                    try:
-                        rules = json.loads(find_replace)
-                        if isinstance(rules, list):
-                            all_segments = find_and_replace(all_segments, rules)
-                    except json.JSONDecodeError:
-                        logger.warning("Invalid find_replace JSON, skipping")
-
-            # 4. Custom speaker labels
-            labels_map = None
-            if speaker_labels:
-                try:
-                    labels_map = json.loads(speaker_labels)
-                    if isinstance(labels_map, dict):
-                        all_segments = apply_speaker_labels(all_segments, labels_map)
-                except json.JSONDecodeError:
-                    logger.warning("Invalid speaker_labels JSON, skipping")
-
-            # Rebuild full text after post-processing
+            # Resolve include_diarization_in_text default
             use_in_text = include_diarization_in_text if include_diarization_in_text is not None else config.include_diarization_in_text
 
-            if diarize and diarization_result and diarization_result.segments and use_in_text:
-                previous_speaker = None
-                seen = set()
-                text_parts = []
-                for seg in all_segments:
-                    if seg.speaker and seg.speaker != "unknown":
-                        if seg.speaker != previous_speaker:
-                            # Use custom label as-is, or format raw speaker ID
-                            if labels_map and seg.speaker in labels_map.values():
-                                display = seg.speaker
-                            elif seg.speaker.startswith("speaker_"):
-                                parts = seg.speaker.split("_")
-                                try:
-                                    num = int(parts[-1]) + 1
-                                    display = f"Speaker {num}"
-                                except (ValueError, IndexError):
-                                    display = seg.speaker
-                            else:
-                                display = seg.speaker
-                            text_parts.append(f"{display}: {seg.text.strip()}")
-                            seen.add(seg.speaker)
-                            previous_speaker = seg.speaker
-                        else:
-                            text_parts.append(seg.text.strip())
-                    else:
-                        text_parts.append(seg.text.strip())
-                        previous_speaker = None
-                full_text = " ".join(text_parts)
-            else:
-                full_text = " ".join(seg.text.strip() for seg in all_segments)
-
-            # Compute duration from audio (last segment end time)
-            duration = all_segments[-1].end if all_segments else 0.0
-
-            # 5. Paragraph detection
-            paragraphs_data = None
-            if detect_paragraphs_flag and all_segments:
-                raw_paragraphs = detect_paragraphs(all_segments, paragraph_silence_threshold)
-                # Annotate paragraphs with per-paragraph entity counts
-                if detect_entities:
-                    annotate_paragraphs_with_entities(raw_paragraphs)
-                # Annotate paragraphs with sentiment
-                if detect_sentiment:
-                    annotate_paragraphs_with_sentiment(raw_paragraphs)
-                paragraphs_data = [Paragraph(**p) for p in raw_paragraphs]
-
-            # 6. Speaker statistics
-            statistics_data = None
-            if diarize and diarization_result and diarization_result.segments:
-                raw_stats = compute_speaker_statistics(all_segments, duration)
-                if raw_stats:
-                    statistics_data = Statistics(
-                        speakers={k: SpeakerStatistics(**v) for k, v in raw_stats["speakers"].items()},
-                        total_speakers=raw_stats["total_speakers"],
-                    )
-
-            # 7. Topic extraction (spaCy noun phrases)
-            topics_data = None
-            if detect_topics and all_segments:
-                raw_topics = extract_topics(all_segments)
-                if raw_topics:
-                    topics_data = [Topic(**t) for t in raw_topics]
-
-            response = TranscriptionResponse(
-                text=full_text,
-                segments=all_segments if timestamps or response_format == "verbose_json" else None,
+            # Build request and delegate to use case
+            req = TranscribeRequest(
+                audio_path=str(temp_file),
+                filename=filename,
                 language=language,
-                duration=duration,
-                model="parakeet-tdt-0.6b-v2",
-                paragraphs=paragraphs_data,
-                statistics=statistics_data,
-                topics=topics_data,
+                word_timestamps=word_timestamps,
+                response_format=response_format,
+                timestamps=timestamps,
+                diarize=diarize,
+                include_diarization_in_text=use_in_text,
+                num_speakers=num_speakers,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+                detect_paragraphs_flag=detect_paragraphs_flag,
+                paragraph_silence_threshold=paragraph_silence_threshold,
+                remove_fillers=remove_fillers,
+                min_confidence=min_confidence,
+                find_replace=find_replace,
+                text_rules=text_rules,
+                speaker_labels=speaker_labels,
+                detect_entities=detect_entities,
+                detect_topics=detect_topics,
+                detect_sentiment=detect_sentiment,
+                chunk_duration=config.chunk_duration,
             )
 
-            # Cleanup
-            if os.path.exists(temp_file):
-                os.unlink(temp_file)
-            if wav_file != str(temp_file) and os.path.exists(wav_file):
-                os.unlink(wav_file)
-            for chunk in audio_chunks:
-                if chunk != wav_file and os.path.exists(chunk):
-                    os.unlink(chunk)
+            response, all_segments, full_text = _use_case.execute(req)
 
             if response_format == "json":
                 return response.dict()
@@ -353,21 +271,28 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health_check():
-        global asr_model, diarizer_instance
         gpu_mem = None
-        if torch.cuda.is_available():
+        cuda_available = False
+        gpu_name = None
+
+        if torch and torch.cuda.is_available():
+            cuda_available = True
+            gpu_name = torch.cuda.get_device_name(0)
             gpu_mem = {
                 "allocated_mb": round(torch.cuda.memory_allocated() / 1024 / 1024),
                 "reserved_mb": round(torch.cuda.memory_reserved() / 1024 / 1024),
             }
+
         return {
             "status": "ok",
-            "model_loaded": asr_model is not None,
+            "engine": config.engine,
+            "model_loaded": _transcription is not None and _transcription.is_loaded(),
             "model_id": config.model_id,
-            "cuda_available": torch.cuda.is_available(),
-            "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+            "model_name": _transcription.model_name() if _transcription else None,
+            "cuda_available": cuda_available,
+            "gpu_name": gpu_name,
             "gpu_memory": gpu_mem,
-            "diarization_available": diarizer_instance is not None and diarizer_instance.pipeline is not None,
+            "diarization_available": _diarization is not None and _diarization.is_loaded(),
         }
 
     @app.get("/v1/models")
