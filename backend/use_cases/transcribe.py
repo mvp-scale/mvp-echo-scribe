@@ -8,6 +8,7 @@ import os
 import json
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -84,48 +85,61 @@ class TranscribeAudioUseCase:
         # 2. Split into chunks if audio is long (prevents VRAM overflow)
         audio_chunks = self._audio.split_into_chunks(wav_file, chunk_duration=req.chunk_duration)
 
-        # 3. Diarization (Pyannote — used by both NeMo and Sherpa engines)
+        # 3. Diarization + ASR (run in parallel when both are needed)
         diarization_result: Optional[DiarizationResult] = None
         run_separate_diarization = (
             req.diarize
             and self._diarization
             and self._diarization.is_loaded()
         )
-        if run_separate_diarization:
+
+        def _run_diarization() -> Optional[DiarizationResult]:
             self._progress.report(job_id, "diarizing")
             logger.info("Running speaker diarization (Pyannote)")
-            diarization_result = self._diarization.diarize(
+            result = self._diarization.diarize(
                 wav_file,
                 num_speakers=req.num_speakers,
                 min_speakers=req.min_speakers,
                 max_speakers=req.max_speakers,
             )
-            logger.info(f"Found {diarization_result.num_speakers} speakers")
+            logger.info(f"Found {result.num_speakers} speakers")
+            return result
 
-        # 4. Transcribe chunks
-        self._progress.report(job_id, "transcribing")
-        all_domain_segments: list[TranscriptSegment] = []
-        all_text_parts: list[str] = []
+        def _run_asr() -> tuple[list[TranscriptSegment], list[str]]:
+            self._progress.report(job_id, "transcribing")
+            segments: list[TranscriptSegment] = []
+            text_parts: list[str] = []
+            for i, chunk_path in enumerate(audio_chunks):
+                self._progress.report(
+                    job_id, "transcribing",
+                    progress=(i + 1) / len(audio_chunks),
+                    detail=f"chunk {i + 1}/{len(audio_chunks)}",
+                )
+                logger.info(f"Processing chunk {i + 1}/{len(audio_chunks)}")
+                chunk_text, chunk_segments = self._transcription.transcribe(
+                    chunk_path, language=req.language, word_timestamps=req.word_timestamps,
+                )
+                if i > 0:
+                    offset = i * req.chunk_duration
+                    for seg in chunk_segments:
+                        seg.start += offset
+                        seg.end += offset
+                text_parts.append(chunk_text)
+                segments.extend(chunk_segments)
+            return segments, text_parts
 
-        for i, chunk_path in enumerate(audio_chunks):
-            self._progress.report(
-                job_id, "transcribing",
-                progress=(i + 1) / len(audio_chunks),
-                detail=f"chunk {i + 1}/{len(audio_chunks)}",
-            )
-            logger.info(f"Processing chunk {i + 1}/{len(audio_chunks)}")
-            chunk_text, chunk_segments = self._transcription.transcribe(
-                chunk_path, language=req.language, word_timestamps=req.word_timestamps,
-            )
-
-            if i > 0:
-                offset = i * req.chunk_duration
-                for seg in chunk_segments:
-                    seg.start += offset
-                    seg.end += offset
-
-            all_text_parts.append(chunk_text)
-            all_domain_segments.extend(chunk_segments)
+        if run_separate_diarization:
+            # Diarization (Pyannote/PyTorch) and ASR (Sherpa/ORT) use independent
+            # GPU frameworks with separate CUDA allocators.  Both release the GIL
+            # during C++/CUDA kernels, so a ThreadPoolExecutor gives true overlap.
+            logger.info("Running diarization + ASR in parallel")
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future_diar = pool.submit(_run_diarization)
+                future_asr = pool.submit(_run_asr)
+                diarization_result = future_diar.result()
+                all_domain_segments, all_text_parts = future_asr.result()
+        else:
+            all_domain_segments, all_text_parts = _run_asr()
 
         # 5. Merge diarization speaker labels into ASR segments
         segments_need_speakers = all_domain_segments and not all_domain_segments[0].speaker

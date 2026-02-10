@@ -32,13 +32,15 @@ class Config:
         self.port = int(os.environ.get("PORT", DEFAULT_PORT))
         self.debug = os.environ.get("DEBUG", "0") == "1"
         self.temperature = float(os.environ.get("TEMPERATURE", "0.0"))
-        self.chunk_duration = int(os.environ.get("CHUNK_DURATION", DEFAULT_CHUNK_DURATION))
+        chunk_env = os.environ.get("CHUNK_DURATION", "").strip()
+        self.chunk_duration = int(chunk_env) if chunk_env else DEFAULT_CHUNK_DURATION
         self.hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_ACCESS_TOKEN")
         self.enable_diarization = os.environ.get("ENABLE_DIARIZATION", "true").lower() == "true"
         self.include_diarization_in_text = os.environ.get("INCLUDE_DIARIZATION_IN_TEXT", "true").lower() == "true"
         self.temp_dir = os.environ.get("TEMP_DIR", "/tmp/parakeet")
         self.engine = os.environ.get("ENGINE", "nemo").lower()
         self.infra = os.environ.get("INFRA", "local").lower()
+        self.asr_provider = os.environ.get("ASR_PROVIDER", "cuda").lower()
 
         # Model ID defaults to engine-appropriate value if not explicitly set
         model_id_env = os.environ.get("MODEL_ID", "").strip()
@@ -48,6 +50,13 @@ class Config:
             self.model_id = DEFAULT_MODEL_ID_SHERPA
         else:
             self.model_id = DEFAULT_MODEL_ID_NEMO
+
+        # Sherpa handles long audio internally with 80s sub-chunks, so the
+        # outer use-case-level chunking is unnecessary overhead.  Set a large
+        # default to effectively disable it (NeMo still needs 500s chunks for
+        # VRAM management).
+        if self.engine == "sherpa" and not chunk_env:
+            self.chunk_duration = 86400  # 24h — effectively no outer split
         Path(self.temp_dir).mkdir(parents=True, exist_ok=True)
 
     def get_hf_token(self) -> Optional[str]:
@@ -66,6 +75,7 @@ class Config:
             "has_hf_token": self.hf_token is not None,
             "engine": self.engine,
             "infra": self.infra,
+            "asr_provider": self.asr_provider,
         }
 
 

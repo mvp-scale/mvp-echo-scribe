@@ -101,7 +101,7 @@ def create_app() -> FastAPI:
             _infra = create_infra_adapters(config)
 
             # Load ML models
-            _transcription.load(config.model_id)
+            _transcription.load(config.model_id, device=config.asr_provider)
             logger.info(f"Transcription model loaded: {_transcription.model_name()}")
 
             if _diarization:
@@ -293,6 +293,7 @@ def create_app() -> FastAPI:
             "gpu_name": gpu_name,
             "gpu_memory": gpu_mem,
             "diarization_available": _diarization is not None and _diarization.is_loaded(),
+            "asr_provider": config.asr_provider,
         }
 
     @app.get("/v1/models")

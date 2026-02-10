@@ -110,6 +110,9 @@ RUN chmod +x /app/entrypoint-sherpa.sh
 ENV PORT=8001
 ENV ENGINE=sherpa
 ENV MODEL_ID=/models/sherpa-onnx
+
+# Reduce ORT CUDA arena allocation — default kNextPowerOfTwo grossly over-allocates
+ENV ORT_ARENA_EXTEND_STRATEGY=kSameAsRequested
 EXPOSE 8001
 
 ENTRYPOINT ["/app/entrypoint-sherpa.sh"]

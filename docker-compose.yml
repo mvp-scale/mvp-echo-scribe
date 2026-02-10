@@ -27,13 +27,15 @@ services:
       - ENGINE=${ENGINE:-nemo}
       - MODEL_ID=${MODEL_ID:-}
       - PORT=8001
-      - CHUNK_DURATION=500
+      - CHUNK_DURATION=${CHUNK_DURATION:-}
       - ENABLE_DIARIZATION=true
       - INCLUDE_DIARIZATION_IN_TEXT=true
       - TEMP_DIR=/tmp/parakeet
       - HF_HOME=/models/huggingface
       - TORCH_HOME=/models/torch
       - NEMO_CACHE_DIR=/models/nemo
+      - ASR_PROVIDER=${ASR_PROVIDER:-cuda}
+      - ORT_ARENA_EXTEND_STRATEGY=kSameAsRequested
     deploy:
       resources:
         reservations:

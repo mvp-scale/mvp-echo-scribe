@@ -35,8 +35,14 @@ DEFAULT_MODEL_DIR = "/models/sherpa-onnx"
 # ~1250 frames at 12.5 fps = 100s. Use 80s for safety margin.
 MAX_CHUNK_SECONDS = 80
 
-# Silence gap (seconds) between tokens that triggers a new segment
-SEGMENT_SILENCE_THRESHOLD = 0.5
+# Silence gap (seconds) between tokens that triggers a new segment.
+# Lower values produce finer segments that align better with speaker turns.
+SEGMENT_SILENCE_THRESHOLD = 0.25
+
+# Max segment duration (seconds). Long segments span multiple speaker turns,
+# causing diarization merge to assign the wrong speaker. Cap segments so they
+# stay within a single speaker's utterance.
+MAX_SEGMENT_DURATION = 6.0
 
 
 class SherpaTranscriptionAdapter(TranscriptionPort):
@@ -52,14 +58,14 @@ class SherpaTranscriptionAdapter(TranscriptionPort):
         self._model_dir = model_id
         self._ensure_models()
 
-        logger.info("Loading Sherpa-ONNX ASR model...")
+        logger.info(f"Loading Sherpa-ONNX ASR model (provider={device})...")
         self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
             encoder=os.path.join(self._model_dir, "encoder.int8.onnx"),
             decoder=os.path.join(self._model_dir, "decoder.int8.onnx"),
             joiner=os.path.join(self._model_dir, "joiner.int8.onnx"),
             tokens=os.path.join(self._model_dir, "tokens.txt"),
             model_type="nemo_transducer",
-            provider="cuda",
+            provider=device,
             num_threads=4,
         )
         logger.info("ASR model loaded")
@@ -181,7 +187,8 @@ class SherpaTranscriptionAdapter(TranscriptionPort):
 
         for i in range(1, len(tokens)):
             gap = timestamps[i] - prev_timestamp
-            if gap > SEGMENT_SILENCE_THRESHOLD:
+            segment_duration = timestamps[i] - current_start
+            if gap > SEGMENT_SILENCE_THRESHOLD or segment_duration > MAX_SEGMENT_DURATION:
                 # Flush current segment
                 text = "".join(current_tokens).strip()
                 if text:
