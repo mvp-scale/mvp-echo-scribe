@@ -121,6 +121,19 @@ ENV ORT_TENSORRT_MAX_WORKSPACE_SIZE=4294967296
 6. Benchmark: compare ASR time with TRT vs CUDA EP
 7. (Optional) Implement parallel diarization + ASR in transcribe.py
 
+### Hard-won dependency fixes (don't lose these):
+- `pyannote-audio==3.3.2` must be installed with `--no-deps` to avoid torch conflicts
+- `torch_audiomentations` must be installed with `--no-deps` (its chain pulls real torchaudio)
+- `torch_pitch_shift` must also be `--no-deps` (depends on torchaudio)
+- Leaf deps to install explicitly: `julius`, `primePy`, `sentencepiece`, `hyperpyyaml`
+- `speechbrain` must be `--no-deps` (also depends on torchaudio)
+- `matplotlib` is required by pyannote at runtime (not in its declared deps)
+- `semver>=3.0.0` and `tensorboardX>=2.6` are required by pyannote
+- torchaudio shim MUST be installed AFTER all pip installs (pip can overwrite it)
+- `huggingface_hub<0.24` pin required (pyannote 3.3.2 uses deprecated kwarg)
+- PyTorch 2.10 `torch.load` defaults `weights_only=True`; lightning passes `weights_only=None` which ORT treats as True. Fix: monkey-patch in diarization adapter to force `False` when `None`
+- All of these are already implemented in the current Dockerfile.sherpa and diarization.py on disk
+
 ### Open questions to verify during implementation:
 - Does sherpa-onnx's from_transducer() accept provider_config for TRT settings, or only env vars?
 - Does tensorrt-lean-cu12 provide all needed .so files, or do we need the full tensorrt-cu12?
