@@ -104,7 +104,7 @@ COPY backend/ /app/
 COPY --from=frontend-build /build/dist /app/static
 
 # Copy entrypoint
-COPY entrypoint-sherpa.sh /app/entrypoint-sherpa.sh
+COPY scripts/entrypoint-sherpa.sh /app/entrypoint-sherpa.sh
 RUN chmod +x /app/entrypoint-sherpa.sh
 
 ENV PORT=8001

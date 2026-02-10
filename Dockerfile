@@ -108,7 +108,7 @@ COPY backend/ /app/
 COPY --from=frontend-build /build/dist /app/static
 
 # Copy entrypoint
-COPY entrypoint.sh /app/entrypoint.sh
+COPY scripts/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 ENV PORT=8001

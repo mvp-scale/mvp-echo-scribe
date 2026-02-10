@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MVP-Echo Studio is a GPU-accelerated batch audio transcription service with speaker diarization. It uses NVIDIA NeMo Parakeet TDT 0.6B for transcription and Pyannote speaker-diarization-3.1 for speaker identification. Performance: ~15s to transcribe 17min audio on RTX 3090.
+MVP-Echo Scribe is a GPU-accelerated batch audio transcription service with speaker diarization. It uses NVIDIA NeMo Parakeet TDT 0.6B (fp16) for transcription and Pyannote speaker-diarization-3.1 for speaker identification. Performance: ~20s to transcribe 17min audio on RTX 3090 at 4GB VRAM. Live at scribe.mvp-scale.com.
 
 **Tech Stack:**
 - Backend: Python 3.12, FastAPI, NVIDIA NeMo, Pyannote

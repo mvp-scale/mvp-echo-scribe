@@ -1,5 +1,5 @@
 #!/bin/bash
-# Clean Docker build + start for MVP-Echo Studio
+# Clean Docker build + start for MVP-Echo Scribe
 #
 # Usage:
 #   ./start.sh          # NeMo (default)
@@ -17,12 +17,12 @@ case "$ENGINE" in
     nemo)
         export DOCKERFILE=Dockerfile
         export ENGINE=nemo
-        echo "=== MVP-Echo Studio: NeMo stack ==="
+        echo "=== MVP-Echo Scribe: NeMo stack ==="
         ;;
     sherpa)
         export DOCKERFILE=Dockerfile.sherpa
         export ENGINE=sherpa
-        echo "=== MVP-Echo Studio: Sherpa-ONNX stack ==="
+        echo "=== MVP-Echo Scribe: Sherpa-ONNX stack ==="
         ;;
     *)
         echo "Unknown engine: $ENGINE"
