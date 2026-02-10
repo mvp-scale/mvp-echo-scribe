@@ -113,7 +113,7 @@ def create_app() -> FastAPI:
                 else:
                     logger.info("No HF token, diarization disabled")
             else:
-                logger.info("Diarization built into transcription adapter (Sherpa)")
+                logger.info("No diarization adapter configured")
 
             # Wire up use case
             _use_case = TranscribeAudioUseCase(

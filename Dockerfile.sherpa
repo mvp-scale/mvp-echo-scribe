@@ -1,15 +1,15 @@
-# MVP-Echo Studio: Sherpa-ONNX Python API with GPU batch processing
+# MVP-Echo Studio: Sherpa-ONNX ASR + Pyannote Diarization (hybrid GPU pipeline)
 #
 # Multi-stage build:
 #   Stage 1: Build frontend (Node 20)
-#   Stage 2: CUDA runtime + Sherpa-ONNX Python API + GPU libraries
+#   Stage 2: CUDA runtime + Sherpa-ONNX ASR + PyTorch/Pyannote diarization
 #
-# 4-step pipeline: Diarization → Extract clips → Batch GPU ASR → Merge
-# Massively parallel on GPU using decode_streams(). No PyTorch needed (pure ONNX Runtime).
+# Pipeline: Silero VAD → Batch GPU ASR (Sherpa) + Pyannote Diarization → Merge
+# Sherpa handles ASR via ONNX Runtime; Pyannote batches speaker embeddings on PyTorch.
 #
-# Image size: ~4-5GB (vs NeMo's ~20GB)
-# VRAM usage: <4GB total (vs NeMo's ~6GB)
-# Performance: 18min in ~5-7s, 3-hour file in <3 minutes
+# Image size: ~12-15GB (Sherpa + PyTorch + Pyannote)
+# VRAM usage: ~4-6GB (vs NeMo's ~12-17GB)
+# Performance: 18min audio in ~12-18s (ASR ~5-7s + diarization ~5s)
 
 # ── Stage 1: Frontend build ──
 FROM node:20-slim AS frontend-build
@@ -20,7 +20,7 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# ── Stage 2: CUDA runtime + Sherpa-ONNX (GPU binaries only) ──
+# ── Stage 2: CUDA runtime + Sherpa-ONNX ASR + Pyannote diarization ──
 FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -50,11 +50,48 @@ RUN pip3 install --no-cache-dir \
     soundfile \
     numpy
 
-# Install web stack dependencies
+# ── PyTorch + Pyannote for GPU-accelerated speaker diarization ──
+# PyTorch with CUDA 12.6 support (Pyannote batches all speaker embeddings as GPU tensors)
+RUN pip3 install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cu126
+
+# Pin huggingface_hub to avoid deprecated kwarg issue with pyannote-audio 3.3.2
+# (pyannote passes deprecated kwarg removed in huggingface_hub >= 0.24)
+RUN pip3 install --no-cache-dir "huggingface_hub<0.24"
+
+# Install pyannote.audio (pin to 3.3.2 for compatibility, --no-deps to avoid torch conflicts)
+RUN pip3 install --no-cache-dir --no-deps pyannote-audio==3.3.2
+
+# torch_audiomentations: required by pyannote, but its dependency chain
+# (torch_pitch_shift → torchaudio) would overwrite our shim.
+# Install the chain with --no-deps and add leaf deps explicitly.
+RUN pip3 install --no-cache-dir --no-deps torch_audiomentations torch_pitch_shift \
+    && pip3 install --no-cache-dir julius primePy
+
+# Remaining pyannote deps not covered by requirements.txt
+# speechbrain: --no-deps to avoid pulling torchaudio; add its missing sub-deps
+RUN pip3 install --no-cache-dir --no-deps speechbrain \
+    && pip3 install --no-cache-dir sentencepiece hyperpyyaml semver tensorboardX matplotlib
+
+# Install web stack dependencies (includes pyannote deps: pyannote-core,
+# pyannote-pipeline, pytorch-metric-learning, asteroid-filterbanks, etc.)
 COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir \
     -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
+
+# torchaudio shim: Pyannote needs torchaudio for audio I/O, but PyPI wheels
+# have CUDA version mismatches with the torch we installed. Use our pure-Python
+# shim (soundfile-based) that provides the subset pyannote actually uses.
+# IMPORTANT: Must be installed AFTER all pip installs to prevent overwriting.
+COPY backend/torchaudio_compat /tmp/torchaudio_shim
+RUN pip3 uninstall -y torchaudio 2>/dev/null || true; \
+    echo "Installing torchaudio shim (soundfile-based, no C++ ABI dependency)"; \
+    SITE=$(python3 -c "import site; print(site.getsitepackages()[0])"); \
+    rm -rf "$SITE/torchaudio"; \
+    cp -r /tmp/torchaudio_shim "$SITE/torchaudio"; \
+    python3 -c "import torchaudio; print(f'torchaudio shim OK')" \
+    && rm -rf /tmp/torchaudio_shim
 
 # spaCy English model for entity detection (CPU-only feature)
 RUN python3 -m spacy download en_core_web_sm

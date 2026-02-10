@@ -90,10 +90,9 @@ def create_ml_adapters(cfg: Config):
         diarization = PyannoteDiarizationAdapter()
     elif engine == "sherpa":
         from adapters.sherpa.transcription import SherpaTranscriptionAdapter
-        # Sherpa adapter has built-in diarization using Python API.
-        # No separate diarization adapter needed.
+        from adapters.nemo.diarization import PyannoteDiarizationAdapter
         transcription = SherpaTranscriptionAdapter()
-        diarization = None
+        diarization = PyannoteDiarizationAdapter()
     else:
         raise ValueError(f"Unknown ENGINE: {engine!r}. Valid options: nemo, sherpa")
 

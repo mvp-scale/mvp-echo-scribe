@@ -17,6 +17,16 @@ class PyannoteDiarizationAdapter(DiarizationPort):
     def load(self, access_token: Optional[str] = None, device: str = "cuda", **kwargs) -> None:
         import torch
 
+        # PyTorch 2.6+ defaults weights_only=True in torch.load, but pyannote 3.3.2
+        # and lightning_fabric pass weights_only=None which triggers the new default.
+        # Force weights_only=False for all torch.load calls during pipeline loading.
+        _orig_torch_load = torch.load
+        def _patched_load(*args, **kw):
+            if kw.get("weights_only") is None:
+                kw["weights_only"] = False
+            return _orig_torch_load(*args, **kw)
+        torch.load = _patched_load
+
         try:
             from pyannote.audio import Pipeline
 

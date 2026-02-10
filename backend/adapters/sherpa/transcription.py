@@ -1,12 +1,15 @@
-"""SherpaTranscriptionAdapter — Python API with native diarization + batch GPU ASR.
+"""SherpaTranscriptionAdapter — batch GPU ASR with token timestamps.
 
-Uses the 4-step pipeline for maximum GPU parallelization:
-  1. Speaker Diarization (GPU): Segment audio by speaker
-  2. Extract Clips: Create audio chunks for each speaker segment
-  3. Batch ASR (GPU): Parallel transcription using decode_streams()
-  4. Merge: Combine diarization + transcription into final segments
+Splits audio into sub-chunks that fit the encoder's attention window (~100s max),
+creates a stream per sub-chunk, then batch-decodes all streams on GPU in one call.
+Token timestamps from each sub-chunk are offset-corrected and merged, then grouped
+into sentence-like segments based on silence gaps.
 
-Performance: ~5-7s for 18min audio, <3min for 3-hour files on RTX 3090.
+Speaker diarization is handled separately by PyannoteDiarizationAdapter
+(injected via config.py). Both use seconds-from-start timestamps, so the
+merge step in the use case aligns them by time overlap.
+
+Performance: ~5-7s for 18min audio on RTX 3090 (pure GPU, no CPU bottleneck).
 """
 
 import logging
@@ -14,7 +17,6 @@ import os
 from typing import Optional
 
 import numpy as np
-import sherpa_onnx
 import soundfile
 
 from domain.models import TranscriptSegment
@@ -25,58 +27,31 @@ logger = logging.getLogger(__name__)
 # Expected model files (downloaded by entrypoint-sherpa.sh from GitHub releases)
 REQUIRED_FILES = {
     "asr": ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"],
-    "segmentation": ["segmentation-3.0.onnx"],
-    "embedding": ["3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"],
 }
 
 DEFAULT_MODEL_DIR = "/models/sherpa-onnx"
+
+# Max duration per sub-chunk (seconds). Parakeet TDT's self-attention supports
+# ~1250 frames at 12.5 fps = 100s. Use 80s for safety margin.
+MAX_CHUNK_SECONDS = 80
+
+# Silence gap (seconds) between tokens that triggers a new segment
+SEGMENT_SILENCE_THRESHOLD = 0.5
 
 
 class SherpaTranscriptionAdapter(TranscriptionPort):
     def __init__(self):
         self._model_dir = DEFAULT_MODEL_DIR
-        self._diarization = None
         self._recognizer = None
         self._ready = False
 
     def load(self, model_id: str = DEFAULT_MODEL_DIR, device: str = "cuda") -> None:
-        """Load diarization and ASR models."""
+        """Load ASR model."""
+        import sherpa_onnx
+
         self._model_dir = model_id
         self._ensure_models()
 
-        # Load diarization pipeline
-        logger.info("Loading Sherpa-ONNX diarization pipeline...")
-        segmentation_config = sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
-            pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
-                model=os.path.join(self._model_dir, "segmentation-3.0.onnx"),
-            ),
-            provider="cuda",
-            num_threads=4,
-        )
-
-        embedding_config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-            model=os.path.join(
-                self._model_dir,
-                "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
-            ),
-            provider="cuda",
-            num_threads=4,
-        )
-
-        clustering_config = sherpa_onnx.FastClusteringConfig(
-            threshold=0.5,
-        )
-
-        diarization_config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
-            segmentation=segmentation_config,
-            embedding=embedding_config,
-            clustering=clustering_config,
-        )
-
-        self._diarization = sherpa_onnx.OfflineSpeakerDiarization(diarization_config)
-        logger.info("Diarization pipeline loaded")
-
-        # Load ASR model using high-level factory (handles config internally)
         logger.info("Loading Sherpa-ONNX ASR model...")
         self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
             encoder=os.path.join(self._model_dir, "encoder.int8.onnx"),
@@ -98,7 +73,7 @@ class SherpaTranscriptionAdapter(TranscriptionPort):
         language: Optional[str] = None,
         word_timestamps: bool = False,
     ) -> tuple[str, list[TranscriptSegment]]:
-        """Run 4-step pipeline: diarize → extract clips → batch ASR → merge."""
+        """Batch GPU ASR: sub-chunk audio → create streams → batch decode → merge tokens."""
         if not self._ready:
             logger.error("Sherpa adapter not loaded")
             return "", []
@@ -108,60 +83,74 @@ class SherpaTranscriptionAdapter(TranscriptionPort):
             logger.info(f"Loading audio: {audio_path}")
             audio, sample_rate = soundfile.read(audio_path, dtype="float32")
 
-            # Convert stereo to mono if needed
             if len(audio.shape) > 1:
                 audio = audio.mean(axis=1)
 
-            logger.info(f"Audio loaded: {len(audio)/sample_rate:.2f}s @ {sample_rate}Hz")
+            duration = len(audio) / sample_rate
+            logger.info(f"Audio loaded: {duration:.2f}s @ {sample_rate}Hz")
 
-            # Step 2: Run diarization
-            logger.info("Running speaker diarization...")
-            diar_result = self._diarization.process(audio)
-            diar_segments = list(diar_result.sort_by_start_time())
-            logger.info(f"Diarization complete: {len(diar_segments)} segments")
+            # Safety check: FFmpeg adapter should have converted to 16kHz mono
+            if sample_rate != 16000:
+                logger.warning(f"Audio is {sample_rate}Hz, expected 16000Hz")
+                target_len = int(len(audio) * 16000 / sample_rate)
+                indices = np.linspace(0, len(audio) - 1, target_len)
+                audio = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
+                sample_rate = 16000
 
-            if not diar_segments:
-                logger.warning("No diarization segments found")
-                return "", []
+            # Step 2: Split into sub-chunks that fit the encoder's attention window
+            chunk_samples = MAX_CHUNK_SECONDS * sample_rate
+            num_chunks = max(1, int(np.ceil(len(audio) / chunk_samples)))
 
-            # Step 3: Extract clips and create streams
-            logger.info("Creating ASR streams for each segment...")
             streams = []
-            for seg in diar_segments:
-                # Extract audio clip for this segment
-                start_sample = int(seg.start * sample_rate)
-                end_sample = int(seg.end * sample_rate)
-                clip = audio[start_sample:end_sample]
+            chunk_offsets = []  # time offset (seconds) for each sub-chunk
+            for i in range(num_chunks):
+                start_sample = i * chunk_samples
+                end_sample = min((i + 1) * chunk_samples, len(audio))
+                chunk = audio[start_sample:end_sample]
 
-                # Create stream and accept waveform
                 stream = self._recognizer.create_stream()
-                stream.accept_waveform(sample_rate, clip.tolist())
+                stream.accept_waveform(sample_rate, chunk)
                 streams.append(stream)
+                chunk_offsets.append(start_sample / sample_rate)
 
-            logger.info(f"Created {len(streams)} streams")
+            logger.info(f"Created {num_chunks} streams ({MAX_CHUNK_SECONDS}s sub-chunks)")
 
-            # Step 4: BATCH GPU decode (the speed trick!)
+            # Step 3: Batch GPU decode — all sub-chunks in one call
             logger.info("Running batch GPU transcription...")
             self._recognizer.decode_streams(streams)
             logger.info("Batch transcription complete")
 
-            # Step 5: Merge results
-            result_segments = []
-            for i, seg in enumerate(diar_segments):
-                text = streams[i].result.text.strip()
-                if text:  # Only include non-empty segments
-                    result_segments.append(
-                        TranscriptSegment(
-                            start=seg.start,
-                            end=seg.end,
-                            text=text,
-                            speaker=f"speaker_SPEAKER_{seg.speaker:02d}",
-                        )
-                    )
+            # Step 4: Merge tokens + timestamps from all sub-chunks
+            all_tokens = []
+            all_timestamps = []
+            all_text_parts = []
 
-            full_text = " ".join(seg.text for seg in result_segments)
+            for i, stream in enumerate(streams):
+                result = stream.result
+                offset = chunk_offsets[i]
+
+                if result.tokens:
+                    all_tokens.extend(result.tokens)
+                    all_timestamps.extend(t + offset for t in result.timestamps)
+
+                if result.text.strip():
+                    all_text_parts.append(result.text.strip())
+
+            full_text = " ".join(all_text_parts)
+
+            if not full_text:
+                logger.warning("No speech detected")
+                return "", []
+
+            logger.info(f"Got {len(all_tokens)} tokens with timestamps from {num_chunks} sub-chunks")
+
+            # Step 5: Group tokens into segments based on silence gaps
+            result_segments = self._group_tokens_into_segments(
+                all_tokens, all_timestamps, duration
+            )
+
             logger.info(
-                f"Transcription complete: {len(result_segments)} segments, "
+                f"Grouped into {len(result_segments)} segments, "
                 f"{len(full_text)} characters"
             )
             return full_text, result_segments
@@ -170,8 +159,59 @@ class SherpaTranscriptionAdapter(TranscriptionPort):
             logger.error(f"Sherpa transcription error: {e}", exc_info=True)
             return "", []
 
+    def _group_tokens_into_segments(
+        self,
+        tokens: list,
+        timestamps: list,
+        audio_duration: float,
+    ) -> list[TranscriptSegment]:
+        """Group tokens into segments by detecting silence gaps between them.
+
+        Each token has a timestamp (seconds from audio start). When the gap
+        between consecutive tokens exceeds SEGMENT_SILENCE_THRESHOLD, a new
+        segment starts. This produces natural sentence-like boundaries.
+        """
+        if not tokens:
+            return []
+
+        segments: list[TranscriptSegment] = []
+        current_tokens: list[str] = [tokens[0]]
+        current_start: float = timestamps[0]
+        prev_timestamp: float = timestamps[0]
+
+        for i in range(1, len(tokens)):
+            gap = timestamps[i] - prev_timestamp
+            if gap > SEGMENT_SILENCE_THRESHOLD:
+                # Flush current segment
+                text = "".join(current_tokens).strip()
+                if text:
+                    segments.append(TranscriptSegment(
+                        start=current_start,
+                        end=prev_timestamp + 0.1,
+                        text=text,
+                        speaker=None,
+                    ))
+                # Start new segment
+                current_tokens = [tokens[i]]
+                current_start = timestamps[i]
+            else:
+                current_tokens.append(tokens[i])
+            prev_timestamp = timestamps[i]
+
+        # Flush final segment
+        text = "".join(current_tokens).strip()
+        if text:
+            segments.append(TranscriptSegment(
+                start=current_start,
+                end=min(prev_timestamp + 0.1, audio_duration),
+                text=text,
+                speaker=None,
+            ))
+
+        return segments
+
     def model_name(self) -> str:
-        return "parakeet-tdt-0.6b-v2-int8+diarization"
+        return "parakeet-tdt-0.6b-v2-int8"
 
     def is_loaded(self) -> bool:
         return self._ready

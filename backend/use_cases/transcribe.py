@@ -81,17 +81,10 @@ class TranscribeAudioUseCase:
         self._progress.report(job_id, "converting")
         wav_file = self._audio.convert_to_wav(req.audio_path)
 
-        # 2. Split into chunks (skip for Sherpa - it handles full files)
-        # Sherpa's batch processing can handle 3-hour files without chunking
-        skip_chunking = self._diarization is None  # Sherpa has no separate diarization
-        if skip_chunking:
-            logger.info("Skipping audio chunking (Sherpa handles full files)")
-            audio_chunks = [wav_file]
-        else:
-            audio_chunks = self._audio.split_into_chunks(wav_file, chunk_duration=req.chunk_duration)
+        # 2. Split into chunks if audio is long (prevents VRAM overflow)
+        audio_chunks = self._audio.split_into_chunks(wav_file, chunk_duration=req.chunk_duration)
 
-        # 3. Diarization (only for engines that need it separately — NeMo)
-        # Sherpa's all-in-one binary returns segments with speakers already populated.
+        # 3. Diarization (Pyannote — used by both NeMo and Sherpa engines)
         diarization_result: Optional[DiarizationResult] = None
         run_separate_diarization = (
             req.diarize
@@ -100,7 +93,7 @@ class TranscribeAudioUseCase:
         )
         if run_separate_diarization:
             self._progress.report(job_id, "diarizing")
-            logger.info("Running speaker diarization (NeMo stack)")
+            logger.info("Running speaker diarization (Pyannote)")
             diarization_result = self._diarization.diarize(
                 wav_file,
                 num_speakers=req.num_speakers,
@@ -134,16 +127,13 @@ class TranscribeAudioUseCase:
             all_text_parts.append(chunk_text)
             all_domain_segments.extend(chunk_segments)
 
-        # 5. Merge diarization into segments (only if we ran separate diarization)
-        # Sherpa segments already have speakers; NeMo segments need them added.
+        # 5. Merge diarization speaker labels into ASR segments
         segments_need_speakers = all_domain_segments and not all_domain_segments[0].speaker
         if segments_need_speakers and diarization_result and diarization_result.segments:
-            logger.info("Merging diarization into transcription segments")
+            logger.info("Merging diarization speaker labels into transcription segments")
             all_domain_segments = self._diarization.merge_with_transcription(
                 diarization_result, all_domain_segments
             )
-        elif not segments_need_speakers:
-            logger.info("Segments already have speaker labels (Sherpa all-in-one)")
 
         # Convert domain segments to DTOs for post-processing (which operates on WhisperSegment)
         all_segments = segments_to_dtos(all_domain_segments)
