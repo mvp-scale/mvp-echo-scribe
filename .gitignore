@@ -62,3 +62,6 @@ frontend/build/
 
 # Docker volumes (if mounted locally)
 models/
+phone_files/
+
+sherpa_onnx_models/
