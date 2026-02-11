@@ -142,7 +142,7 @@ export const DEFAULT_OPTIONS: TranscriptionOptions = {
   diarize: true,
   detectParagraphs: true,
   paragraphSilenceThreshold: 0.8,
-  textRulesEnabled: true,
+  textRulesEnabled: false,
   textRules: [],
   textRuleCategory: "all",
   minConfidence: 0.0,
